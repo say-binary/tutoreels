@@ -1,65 +1,234 @@
-import Image from "next/image";
+"use client";
+
+import dynamic from "next/dynamic";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { TextInputPanel } from "@/components/Input/TextInputPanel";
+import { PlaybackControls } from "@/components/Controls/PlaybackControls";
+import { useAnimationEngine } from "@/hooks/useAnimationEngine";
+import type { SceneGraph } from "@/types/sceneGraph";
+import { demoSceneGraph } from "@/lib/demoSceneGraph";
+import { demoBinarySearch } from "@/lib/demoBinarySearch";
+import { demoHashMap } from "@/lib/demoHashMap";
+import { demoTCPHandshake } from "@/lib/demoTCPHandshake";
+
+const CanvasWorkspace = dynamic(
+  () =>
+    import("@/components/Canvas/CanvasWorkspace").then(
+      (m) => m.CanvasWorkspace
+    ),
+  { ssr: false }
+);
+
+const DEMOS: { label: string; sg: SceneGraph }[] = [
+  { label: "Neuron", sg: demoSceneGraph },
+  { label: "Binary Search", sg: demoBinarySearch },
+  { label: "Hash Map", sg: demoHashMap },
+  { label: "TCP Handshake", sg: demoTCPHandshake },
+];
 
 export default function Home() {
+  const [sceneGraph, setSceneGraph] = useState<SceneGraph | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastPrompt, setLastPrompt] = useState<string | null>(null);
+  const [activeDemo, setActiveDemo] = useState<string | null>(null);
+  const [reviewNote, setReviewNote] = useState("");
+  const autoPlayRef = useRef(false);
+
+  const {
+    states,
+    currentTime,
+    duration,
+    playing,
+    speed,
+    play,
+    pause,
+    reset,
+    seek,
+    setSpeed,
+  } = useAnimationEngine(sceneGraph);
+
+  // Auto-play when a new scene graph loads
+  useEffect(() => {
+    if (sceneGraph && autoPlayRef.current) {
+      autoPlayRef.current = false;
+      const timer = setTimeout(() => play(), 300);
+      return () => clearTimeout(timer);
+    }
+  }, [sceneGraph, play]);
+
+  const handleLoadDemo = useCallback((label: string, sg: SceneGraph) => {
+    setSceneGraph(sg);
+    setLastPrompt(null);
+    setError(null);
+    setActiveDemo(label);
+    setReviewNote("");
+    autoPlayRef.current = true;
+  }, []);
+
+  const handleGenerate = useCallback(async (description: string) => {
+    setLoading(true);
+    setError(null);
+    setLastPrompt(description);
+    setActiveDemo(null);
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Generation failed");
+      }
+      const sg: SceneGraph = await res.json();
+      setSceneGraph(sg);
+      autoPlayRef.current = true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const handleRegenerate = useCallback(() => {
+    if (lastPrompt) {
+      handleGenerate(lastPrompt);
+    }
+  }, [lastPrompt, handleGenerate]);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <div className="flex h-screen overflow-hidden bg-zinc-900 text-white">
+      {/* Left panel */}
+      <div className="w-80 bg-zinc-800 border-r border-zinc-700 flex flex-col">
+        <TextInputPanel
+          onSubmit={handleGenerate}
+          onDemo={() => handleLoadDemo("Neuron", demoSceneGraph)}
+          loading={loading}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+
+        {/* Demo selector */}
+        <div className="border-t border-zinc-700 p-3">
+          <p className="text-xs text-zinc-500 mb-2 font-medium">Review Demos:</p>
+          <div className="flex flex-wrap gap-1.5">
+            {DEMOS.map((d) => (
+              <button
+                key={d.label}
+                onClick={() => handleLoadDemo(d.label, d.sg)}
+                disabled={loading}
+                className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
+                  activeDemo === d.label
+                    ? "bg-blue-600 text-white"
+                    : "bg-zinc-700 text-zinc-300 hover:bg-zinc-600"
+                } disabled:opacity-50`}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+
+        {/* Review textbox */}
+        {activeDemo && (
+          <div className="border-t border-zinc-700 p-3">
+            <label className="text-xs text-zinc-400 block mb-1">
+              Review notes for &quot;{activeDemo}&quot;:
+            </label>
+            <textarea
+              value={reviewNote}
+              onChange={(e) => setReviewNote(e.target.value)}
+              placeholder="What's wrong? e.g. 'arrows misaligned', 'label overlaps box', 'text too small'..."
+              rows={3}
+              className="w-full bg-zinc-900 border border-zinc-600 rounded-lg p-2 text-xs text-white placeholder-zinc-500 resize-none focus:outline-none focus:border-yellow-500"
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+          </div>
+        )}
+      </div>
+
+      {/* Main content */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Title bar */}
+        {sceneGraph && (
+          <div className="flex items-center justify-between px-4 py-2 bg-zinc-800/80 border-b border-zinc-700/50">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-medium text-white truncate">
+                {sceneGraph.metadata.title}
+              </h2>
+              <p className="text-xs text-zinc-400 truncate">
+                {sceneGraph.metadata.description}
+              </p>
+            </div>
+            {lastPrompt && (
+              <button
+                onClick={handleRegenerate}
+                disabled={loading}
+                className="ml-3 flex items-center gap-1.5 px-3 py-1.5 text-xs bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 rounded-md text-zinc-300 transition-colors shrink-0"
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M2 2v5h5L5.05 5.05A5.5 5.5 0 0 1 13.5 8 5.5 5.5 0 1 1 2.05 6.23L.93 5.36A7 7 0 1 0 15 8a7 7 0 0 0-12.55-4.2L2 2z" />
+                </svg>
+                Regenerate
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Canvas */}
+        <div className={`flex-1 relative ${sceneGraph ? "" : "flex items-center justify-center"}`}>
+          {sceneGraph ? (
+            <CanvasWorkspace
+              assets={sceneGraph.assets}
+              states={states}
+              backgroundColor={sceneGraph.metadata.backgroundColor}
+              canvasWidth={sceneGraph.metadata.canvasWidth}
+              canvasHeight={sceneGraph.metadata.canvasHeight}
+            />
+          ) : (
+            <div className="text-center text-zinc-500">
+              <svg className="mx-auto mb-4 w-16 h-16 opacity-30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+              <p className="text-lg">Describe a concept to generate an animation</p>
+              <p className="text-sm mt-1 text-zinc-600">Or click a demo below to review</p>
+            </div>
+          )}
+
+          {loading && sceneGraph && (
+            <div className="absolute inset-0 bg-zinc-900/70 flex items-center justify-center z-10">
+              <div className="flex flex-col items-center gap-3">
+                <svg className="animate-spin h-8 w-8 text-blue-500" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
+                  <path fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" className="opacity-75" />
+                </svg>
+                <p className="text-sm text-zinc-300">Regenerating animation...</p>
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-red-900/80 border border-red-700 text-red-200 px-4 py-2 rounded-lg text-sm max-w-md z-20">
+              {error}
+              <button onClick={() => setError(null)} className="ml-2 text-red-400 hover:text-red-200">x</button>
+            </div>
+          )}
         </div>
-      </main>
+
+        {/* Playback */}
+        {sceneGraph && (
+          <PlaybackControls
+            playing={playing}
+            speed={speed}
+            currentTime={currentTime}
+            duration={duration}
+            timelineEntries={sceneGraph.timeline}
+            onPlay={play}
+            onPause={pause}
+            onReset={reset}
+            onSeek={seek}
+            onSpeedChange={setSpeed}
+          />
+        )}
+      </div>
     </div>
   );
 }
