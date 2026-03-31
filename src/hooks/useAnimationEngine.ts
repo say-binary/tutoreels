@@ -44,7 +44,18 @@ export function useAnimationEngine(sceneGraph: SceneGraph | null) {
     const engine = new AnimationEngine(sceneGraph);
     engineRef.current = engine;
 
-    const dur = sceneGraph.metadata.duration;
+    // Calculate effective duration from timeline entries
+    // Use the later of: metadata.duration OR last timeline event end + 2s buffer
+    let lastEnd = 0;
+    for (const entry of sceneGraph.timeline) {
+      const end = entry.startTime + entry.duration;
+      if (end > lastEnd) lastEnd = end;
+    }
+    const effectiveDuration = lastEnd + 2; // 2s viewing buffer after last animation
+    // Use metadata duration only if it's close to effective; otherwise use effective
+    const dur = Math.abs(sceneGraph.metadata.duration - effectiveDuration) > 5
+      ? effectiveDuration
+      : sceneGraph.metadata.duration;
     setDuration(dur);
 
     const clock = new Clock(dur, tick);

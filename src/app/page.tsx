@@ -10,6 +10,9 @@ import { demoSceneGraph } from "@/lib/demoSceneGraph";
 import { demoBinarySearch } from "@/lib/demoBinarySearch";
 import { demoHashMap } from "@/lib/demoHashMap";
 import { demoTCPHandshake } from "@/lib/demoTCPHandshake";
+import { demoMultiAgent } from "@/lib/demoMultiAgent";
+import { SavedAnimations } from "@/components/Input/SavedAnimations";
+import { saveToLocalStorage } from "@/lib/savedStorage";
 
 const CanvasWorkspace = dynamic(
   () =>
@@ -24,6 +27,7 @@ const DEMOS: { label: string; sg: SceneGraph }[] = [
   { label: "Binary Search", sg: demoBinarySearch },
   { label: "Hash Map", sg: demoHashMap },
   { label: "TCP Handshake", sg: demoTCPHandshake },
+  { label: "Multi-Agent", sg: demoMultiAgent },
 ];
 
 export default function Home() {
@@ -33,6 +37,9 @@ export default function Home() {
   const [lastPrompt, setLastPrompt] = useState<string | null>(null);
   const [activeDemo, setActiveDemo] = useState<string | null>(null);
   const [reviewNote, setReviewNote] = useState("");
+  const [sidebarTab, setSidebarTab] = useState<"create" | "saved">("create");
+  const [savedVersion, setSavedVersion] = useState(0); // bumped to trigger re-render of SavedAnimations
+  const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const autoPlayRef = useRef(false);
 
   const {
@@ -97,49 +104,100 @@ export default function Home() {
     }
   }, [lastPrompt, handleGenerate]);
 
+  const handleLoadSaved = useCallback((sg: SceneGraph) => {
+    setSceneGraph(sg);
+    setLastPrompt(null);
+    setError(null);
+    setActiveDemo(null);
+    autoPlayRef.current = true;
+  }, []);
+
+  const handleSave = useCallback(() => {
+    if (!sceneGraph) return;
+    saveToLocalStorage(sceneGraph, lastPrompt);
+    setSavedVersion((v) => v + 1);
+    setShowSaveConfirm(true);
+    setTimeout(() => setShowSaveConfirm(false), 2000);
+  }, [sceneGraph, lastPrompt]);
+
   return (
     <div className="flex h-screen overflow-hidden bg-zinc-900 text-white">
       {/* Left panel */}
       <div className="w-80 bg-zinc-800 border-r border-zinc-700 flex flex-col">
-        <TextInputPanel
-          onSubmit={handleGenerate}
-          onDemo={() => handleLoadDemo("Neuron", demoSceneGraph)}
-          loading={loading}
-        />
-
-        {/* Demo selector */}
-        <div className="border-t border-zinc-700 p-3">
-          <p className="text-xs text-zinc-500 mb-2 font-medium">Review Demos:</p>
-          <div className="flex flex-wrap gap-1.5">
-            {DEMOS.map((d) => (
-              <button
-                key={d.label}
-                onClick={() => handleLoadDemo(d.label, d.sg)}
-                disabled={loading}
-                className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
-                  activeDemo === d.label
-                    ? "bg-blue-600 text-white"
-                    : "bg-zinc-700 text-zinc-300 hover:bg-zinc-600"
-                } disabled:opacity-50`}
-              >
-                {d.label}
-              </button>
-            ))}
-          </div>
+        {/* Tab switcher */}
+        <div className="flex border-b border-zinc-700">
+          <button
+            onClick={() => setSidebarTab("create")}
+            className={`flex-1 py-2.5 text-xs font-medium transition-colors ${
+              sidebarTab === "create"
+                ? "text-white border-b-2 border-blue-500"
+                : "text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            Create
+          </button>
+          <button
+            onClick={() => setSidebarTab("saved")}
+            className={`flex-1 py-2.5 text-xs font-medium transition-colors ${
+              sidebarTab === "saved"
+                ? "text-white border-b-2 border-blue-500"
+                : "text-zinc-400 hover:text-zinc-200"
+            }`}
+          >
+            Saved
+          </button>
         </div>
 
-        {/* Review textbox */}
-        {activeDemo && (
-          <div className="border-t border-zinc-700 p-3">
-            <label className="text-xs text-zinc-400 block mb-1">
-              Review notes for &quot;{activeDemo}&quot;:
-            </label>
-            <textarea
-              value={reviewNote}
-              onChange={(e) => setReviewNote(e.target.value)}
-              placeholder="What's wrong? e.g. 'arrows misaligned', 'label overlaps box', 'text too small'..."
-              rows={3}
-              className="w-full bg-zinc-900 border border-zinc-600 rounded-lg p-2 text-xs text-white placeholder-zinc-500 resize-none focus:outline-none focus:border-yellow-500"
+        {sidebarTab === "create" ? (
+          <>
+            <TextInputPanel
+              onSubmit={handleGenerate}
+              onDemo={() => handleLoadDemo("Neuron", demoSceneGraph)}
+              loading={loading}
+            />
+
+            {/* Demo selector */}
+            <div className="border-t border-zinc-700 p-3">
+              <p className="text-xs text-zinc-500 mb-2 font-medium">Review Demos:</p>
+              <div className="flex flex-wrap gap-1.5">
+                {DEMOS.map((d) => (
+                  <button
+                    key={d.label}
+                    onClick={() => handleLoadDemo(d.label, d.sg)}
+                    disabled={loading}
+                    className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
+                      activeDemo === d.label
+                        ? "bg-blue-600 text-white"
+                        : "bg-zinc-700 text-zinc-300 hover:bg-zinc-600"
+                    } disabled:opacity-50`}
+                  >
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Review textbox */}
+            {activeDemo && (
+              <div className="border-t border-zinc-700 p-3">
+                <label className="text-xs text-zinc-400 block mb-1">
+                  Review notes for &quot;{activeDemo}&quot;:
+                </label>
+                <textarea
+                  value={reviewNote}
+                  onChange={(e) => setReviewNote(e.target.value)}
+                  placeholder="What's wrong? e.g. 'arrows misaligned', 'label overlaps box', 'text too small'..."
+                  rows={3}
+                  className="w-full bg-zinc-900 border border-zinc-600 rounded-lg p-2 text-xs text-white placeholder-zinc-500 resize-none focus:outline-none focus:border-yellow-500"
+                />
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="flex-1 p-3 overflow-y-auto">
+            <SavedAnimations
+              onLoad={handleLoadSaved}
+              refreshKey={savedVersion}
             />
           </div>
         )}
@@ -158,18 +216,50 @@ export default function Home() {
                 {sceneGraph.metadata.description}
               </p>
             </div>
-            {lastPrompt && (
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Save button */}
               <button
-                onClick={handleRegenerate}
-                disabled={loading}
-                className="ml-3 flex items-center gap-1.5 px-3 py-1.5 text-xs bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 rounded-md text-zinc-300 transition-colors shrink-0"
+                onClick={handleSave}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors shrink-0 ${
+                  showSaveConfirm
+                    ? "bg-green-600/20 text-green-400 border border-green-600/30"
+                    : "bg-zinc-700 hover:bg-zinc-600 text-zinc-300 border border-zinc-600"
+                }`}
               >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M2 2v5h5L5.05 5.05A5.5 5.5 0 0 1 13.5 8 5.5 5.5 0 1 1 2.05 6.23L.93 5.36A7 7 0 1 0 15 8a7 7 0 0 0-12.55-4.2L2 2z" />
-                </svg>
-                Regenerate
+                {showSaveConfirm ? (
+                  <>
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z" />
+                    </svg>
+                    Saved!
+                  </>
+                ) : (
+                  <>
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M2.5 2.5h8l3 3v8h-11z" />
+                      <path d="M5 2.5v4h5v-4" />
+                      <path d="M4.5 9.5h7" />
+                      <path d="M4.5 11.5h7" />
+                    </svg>
+                    Save
+                  </>
+                )}
               </button>
-            )}
+
+              {/* Regenerate button */}
+              {lastPrompt && (
+                <button
+                  onClick={handleRegenerate}
+                  disabled={loading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 rounded-md text-zinc-300 transition-colors shrink-0"
+                >
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M2 2v5h5L5.05 5.05A5.5 5.5 0 0 1 13.5 8 5.5 5.5 0 1 1 2.05 6.23L.93 5.36A7 7 0 1 0 15 8a7 7 0 0 0-12.55-4.2L2 2z" />
+                  </svg>
+                  Regenerate
+                </button>
+              )}
+            </div>
           </div>
         )}
 
