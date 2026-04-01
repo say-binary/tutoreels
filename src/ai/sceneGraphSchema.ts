@@ -79,6 +79,11 @@ const ShapeStateSchema = z.object({
   // Advanced shapes
   numPoints: z.number().optional(),
   innerRadius: z.number().optional(),
+
+  // Blink
+  blink: z.boolean().optional(),
+  blinkColor: z.string().optional(),
+  blinkSpeed: z.number().optional(),
 });
 
 const AssetInstanceSchema = z.object({

@@ -13,6 +13,12 @@ interface CanvasWorkspaceProps {
   backgroundColor?: string;
   canvasWidth?: number;
   canvasHeight?: number;
+  editMode?: boolean;
+  selectedAssetIds?: Set<string>;
+  onSelectAsset?: (id: string | null, additive: boolean) => void;
+  onEditChange?: (id: string, changes: Record<string, unknown>) => void;
+  onBatchEditChange?: (batch: Array<{ id: string; changes: Record<string, unknown> }>) => void;
+  onRubberBandSelect?: (ids: string[]) => void;
 }
 
 export function CanvasWorkspace({
@@ -21,6 +27,12 @@ export function CanvasWorkspace({
   backgroundColor = "#FFFFFF",
   canvasWidth = 1280,
   canvasHeight = 720,
+  editMode = false,
+  selectedAssetIds,
+  onSelectAsset,
+  onEditChange,
+  onBatchEditChange,
+  onRubberBandSelect,
 }: CanvasWorkspaceProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<Konva.Stage>(null);
@@ -33,6 +45,11 @@ export function CanvasWorkspace({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const isPanning = useRef(false);
   const lastPointer = useRef({ x: 0, y: 0 });
+
+  // Rubber band selection state
+  const [selectionRect, setSelectionRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const isSelecting = useRef(false);
+  const selectionStart = useRef({ x: 0, y: 0 });
 
   useEffect(() => {
     const container = containerRef.current;
@@ -55,11 +72,27 @@ export function CanvasWorkspace({
     return () => observer.disconnect();
   }, [canvasWidth, canvasHeight]);
 
-  // Reset pan/zoom when assets change (new scene graph loaded)
   useEffect(() => {
     setZoom(1);
     setPan({ x: 0, y: 0 });
   }, [assets]);
+
+  const baseScale = dimensions?.baseScale ?? 1;
+  const totalScale = baseScale * zoom;
+  const stageWidth = dimensions?.width ?? 800;
+  const stageHeight = dimensions?.height ?? 450;
+  const contentWidth = canvasWidth * totalScale;
+  const contentHeight = canvasHeight * totalScale;
+  const centerOffsetX = (stageWidth - contentWidth) / 2 + pan.x;
+  const centerOffsetY = (stageHeight - contentHeight) / 2 + pan.y;
+
+  // Convert screen coords to canvas coords
+  const screenToCanvas = useCallback((screenX: number, screenY: number) => {
+    return {
+      x: (screenX - centerOffsetX) / totalScale,
+      y: (screenY - centerOffsetY) / totalScale,
+    };
+  }, [centerOffsetX, centerOffsetY, totalScale]);
 
   const handleWheel = useCallback(
     (e: Konva.KonvaEventObject<WheelEvent>) => {
@@ -76,30 +109,118 @@ export function CanvasWorkspace({
 
   const handleMouseDown = useCallback(
     (e: Konva.KonvaEventObject<MouseEvent>) => {
-      if (e.evt.button === 1 || e.evt.altKey) {
-        // Middle click or Alt+click to pan
+      // In edit mode: left click on empty area starts rubber band selection
+      if (editMode && e.evt.button === 0) {
+        // Check if click is on the background (not a shape)
+        const target = e.target;
+        const stage = stageRef.current;
+        if (target === stage || target.getClassName() === "Rect" && target.getParent()?.getClassName() === "Layer") {
+          const pointer = stage?.getPointerPosition();
+          if (pointer) {
+            const canvasPos = screenToCanvas(pointer.x, pointer.y);
+            isSelecting.current = true;
+            selectionStart.current = canvasPos;
+            setSelectionRect({ x: canvasPos.x, y: canvasPos.y, width: 0, height: 0 });
+            onSelectAsset?.(null, false); // deselect
+          }
+        }
+        return;
+      }
+
+      // Pan with middle click
+      if (e.evt.button === 1) {
+        isPanning.current = true;
+        lastPointer.current = { x: e.evt.clientX, y: e.evt.clientY };
+        e.evt.preventDefault();
+        return;
+      }
+
+      // Non-edit: alt+click to pan
+      if (!editMode && e.evt.altKey) {
         isPanning.current = true;
         lastPointer.current = { x: e.evt.clientX, y: e.evt.clientY };
         e.evt.preventDefault();
       }
     },
-    []
+    [editMode, screenToCanvas, onSelectAsset]
   );
 
   const handleMouseMove = useCallback(
     (e: Konva.KonvaEventObject<MouseEvent>) => {
-      if (!isPanning.current) return;
-      const dx = e.evt.clientX - lastPointer.current.x;
-      const dy = e.evt.clientY - lastPointer.current.y;
-      lastPointer.current = { x: e.evt.clientX, y: e.evt.clientY };
-      setPan((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
+      if (isPanning.current) {
+        const dx = e.evt.clientX - lastPointer.current.x;
+        const dy = e.evt.clientY - lastPointer.current.y;
+        lastPointer.current = { x: e.evt.clientX, y: e.evt.clientY };
+        setPan((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
+        return;
+      }
+
+      // Rubber band selection
+      if (isSelecting.current && editMode) {
+        const stage = stageRef.current;
+        const pointer = stage?.getPointerPosition();
+        if (pointer) {
+          const canvasPos = screenToCanvas(pointer.x, pointer.y);
+          const sx = selectionStart.current.x;
+          const sy = selectionStart.current.y;
+          setSelectionRect({
+            x: Math.min(sx, canvasPos.x),
+            y: Math.min(sy, canvasPos.y),
+            width: Math.abs(canvasPos.x - sx),
+            height: Math.abs(canvasPos.y - sy),
+          });
+        }
+      }
     },
-    []
+    [editMode, screenToCanvas]
   );
 
   const handleMouseUp = useCallback(() => {
     isPanning.current = false;
-  }, []);
+
+    // Finish rubber band selection
+    if (isSelecting.current && selectionRect && editMode) {
+      isSelecting.current = false;
+
+      // Only select if the rectangle is big enough (not just a click)
+      if (selectionRect.width > 10 && selectionRect.height > 10) {
+        const rect = selectionRect;
+        const selectedIds: string[] = [];
+
+        for (const asset of assets) {
+          const state = states.get(asset.id);
+          if (!state || (!state.visible && (state.opacity === undefined || state.opacity <= 0))) continue;
+
+          let cx: number, cy: number;
+          if (asset.type === "arrow" || asset.type === "line") {
+            const pts = state.points;
+            if (pts && pts.length >= 4) {
+              cx = (pts[0] + pts[pts.length - 2]) / 2;
+              cy = (pts[1] + pts[pts.length - 1]) / 2;
+            } else continue;
+          } else {
+            cx = state.x ?? 0;
+            cy = state.y ?? 0;
+          }
+
+          if (
+            cx >= rect.x &&
+            cx <= rect.x + rect.width &&
+            cy >= rect.y &&
+            cy <= rect.y + rect.height
+          ) {
+            selectedIds.push(asset.id);
+          }
+        }
+
+        if (selectedIds.length > 0) {
+          onRubberBandSelect?.(selectedIds);
+        }
+      }
+
+      setSelectionRect(null);
+    }
+  }, [editMode, selectionRect, assets, states, onRubberBandSelect]);
 
   const handleResetView = useCallback(() => {
     setZoom(1);
@@ -107,24 +228,13 @@ export function CanvasWorkspace({
   }, []);
 
   const ready = dimensions !== null;
-  const baseScale = dimensions?.baseScale ?? 1;
-  const totalScale = baseScale * zoom;
-  const stageWidth = dimensions?.width ?? 800;
-  const stageHeight = dimensions?.height ?? 450;
-
-  // Center the canvas in the viewport
-  const contentWidth = canvasWidth * totalScale;
-  const contentHeight = canvasHeight * totalScale;
-  const centerOffsetX = (stageWidth - contentWidth) / 2 + pan.x;
-  const centerOffsetY = (stageHeight - contentHeight) / 2 + pan.y;
-
   const isViewModified = zoom !== 1 || pan.x !== 0 || pan.y !== 0;
 
   return (
     <div
       ref={containerRef}
       style={{ position: "absolute", inset: 0 }}
-      className="bg-zinc-900 overflow-hidden"
+      className={`bg-zinc-900 overflow-hidden ${editMode ? "ring-2 ring-blue-500/30 ring-inset" : ""}`}
     >
       {ready && (
         <>
@@ -137,7 +247,7 @@ export function CanvasWorkspace({
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
-            style={{ cursor: isPanning.current ? "grabbing" : "default" }}
+            style={{ cursor: editMode ? (isSelecting.current ? "crosshair" : "default") : "default" }}
           >
             <Layer x={centerOffsetX} y={centerOffsetY} scaleX={totalScale} scaleY={totalScale}>
               <Rect
@@ -148,7 +258,16 @@ export function CanvasWorkspace({
                 fill={backgroundColor}
                 cornerRadius={4}
               />
-              <SceneRenderer assets={assets} states={states} />
+              <SceneRenderer
+                assets={assets}
+                states={states}
+                editMode={editMode}
+                selectedIds={selectedAssetIds}
+                onSelect={onSelectAsset}
+                onEditChange={onEditChange}
+                onBatchEditChange={onBatchEditChange}
+                selectionRect={selectionRect}
+              />
             </Layer>
           </Stage>
 
@@ -167,10 +286,17 @@ export function CanvasWorkspace({
             )}
           </div>
 
-          {/* Pan/zoom hint */}
-          <div className="absolute top-3 right-3 text-[10px] text-zinc-600 pointer-events-none">
-            Scroll to zoom &middot; Alt+drag to pan
-          </div>
+          {/* Hints */}
+          {!editMode && (
+            <div className="absolute top-3 right-3 text-[10px] text-zinc-600 pointer-events-none">
+              Scroll to zoom &middot; Alt+drag to pan
+            </div>
+          )}
+          {editMode && (
+            <div className="absolute top-3 right-3 text-[10px] text-zinc-600 pointer-events-none">
+              Drag shapes to move &middot; Drag empty area to select &middot; Shift+click to multi-select
+            </div>
+          )}
         </>
       )}
     </div>

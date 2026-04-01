@@ -75,6 +75,11 @@ export interface ShapeState {
   // Advanced shapes
   numPoints?: number;
   innerRadius?: number;
+
+  // Blink effect — when true, shape pulses continuously
+  blink?: boolean;
+  blinkColor?: string; // color to pulse to (default: #FFD700)
+  blinkSpeed?: number; // pulses per second (default: 2)
 }
 
 export interface AssetInstance {
