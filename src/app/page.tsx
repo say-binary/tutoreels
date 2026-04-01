@@ -59,20 +59,20 @@ export default function Home() {
     if (!editMode) return states;
     const merged = new Map(states);
 
-    // Apply overrides
-    for (const [id, changes] of overrides) {
-      const existing = merged.get(id);
-      if (existing) merged.set(id, { ...existing, ...changes } as ComputedAssetState);
-    }
-
-    // Add pending new assets (they don't exist in engine yet)
+    // 1. Add pending new assets FIRST (they don't exist in engine yet)
     for (const asset of pendingAdds) {
       if (!merged.has(asset.id)) {
         merged.set(asset.id, { ...asset.initialState, visible: true, opacity: 1 } as ComputedAssetState);
       }
     }
 
-    // Hide pending deletes
+    // 2. Apply overrides AFTER — so they can modify both existing and pending shapes
+    for (const [id, changes] of overrides) {
+      const existing = merged.get(id);
+      if (existing) merged.set(id, { ...existing, ...changes } as ComputedAssetState);
+    }
+
+    // 3. Hide pending deletes
     for (const id of pendingDeletes) {
       const existing = merged.get(id);
       if (existing) merged.set(id, { ...existing, visible: false, opacity: 0 } as ComputedAssetState);
