@@ -7,10 +7,15 @@ const ADD_SHAPES: { type: AssetType; label: string }[] = [
   { type: "rect", label: "Rectangle" },
   { type: "roundedRect", label: "Rounded Rect" },
   { type: "circle", label: "Circle" },
+  { type: "ellipse", label: "Ellipse" },
+  { type: "star", label: "Star" },
+  { type: "polygon", label: "Polygon" },
+  { type: "diamond", label: "Diamond" },
   { type: "arrow", label: "Arrow" },
   { type: "line", label: "Line" },
   { type: "text", label: "Text" },
   { type: "textBox", label: "Text Box" },
+  { type: "container", label: "Container" },
 ];
 
 interface EditToolbarProps {

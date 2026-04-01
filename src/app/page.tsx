@@ -253,10 +253,15 @@ export default function Home() {
       rect: { x: 640, y: 360, width: 120, height: 80, fill: "#4A90D9", stroke: "#FFFFFF", strokeWidth: 2 },
       roundedRect: { x: 640, y: 360, width: 120, height: 80, fill: "#50C878", stroke: "#FFFFFF", strokeWidth: 2, cornerRadius: 10 },
       circle: { x: 640, y: 360, radius: 40, fill: "#E6A817", stroke: "#FFFFFF", strokeWidth: 2 },
+      ellipse: { x: 640, y: 360, width: 120, height: 70, fill: "#9B59B6", stroke: "#FFFFFF", strokeWidth: 2 },
+      star: { x: 640, y: 360, radius: 35, numPoints: 5, innerRadius: 15, fill: "#F4D03F", stroke: "#E6A817", strokeWidth: 2 },
+      polygon: { x: 640, y: 360, radius: 35, numPoints: 6, fill: "#2EC4B6", stroke: "#FFFFFF", strokeWidth: 2 },
+      diamond: { x: 640, y: 360, width: 80, height: 80, fill: "#E74C3C", stroke: "#FFFFFF", strokeWidth: 2 },
       arrow: { x: 0, y: 0, points: [540, 360, 740, 360], stroke: "#E6A817", strokeWidth: 2 },
       line: { x: 0, y: 0, points: [540, 360, 740, 360], stroke: "#95A5A6", strokeWidth: 2 },
       text: { x: 640, y: 360, text: "New Text", fontSize: 20, fill: "#FFFFFF" },
       textBox: { x: 640, y: 360, width: 120, height: 40, text: "Label", fontSize: 14, fill: "#2C3E50", stroke: "#FFFFFF" },
+      container: { x: 640, y: 360, width: 200, height: 120, fill: "#0d1220", stroke: "#95A5A6", text: "Group" },
     };
     const newAsset = { id, type: type as SceneGraph["assets"][0]["type"], initialState: defaults[type] || defaults.rect, visible: true };
     setPendingAdds((prev) => [...prev, newAsset]);

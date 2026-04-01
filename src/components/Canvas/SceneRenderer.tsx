@@ -106,21 +106,25 @@ export function SceneRenderer({
             onTap={(e) => { e.cancelBubble = true; onSelect?.(asset.id, false); }}
             onDblClick={(e) => {
               e.cancelBubble = true;
-              // Double-click on text/textBox to edit text inline
               if (state.text !== undefined) {
-                const newText = prompt("Edit text:", state.text);
-                if (newText !== null && newText !== state.text) {
-                  onEditChange?.(asset.id, { text: newText });
-                }
+                // Use setTimeout to escape Konva's event context so prompt() works
+                setTimeout(() => {
+                  const newText = prompt("Edit text:", state.text ?? "");
+                  if (newText !== null) {
+                    onEditChange?.(asset.id, { text: newText });
+                  }
+                }, 0);
               }
             }}
             onDblTap={(e) => {
               e.cancelBubble = true;
               if (state.text !== undefined) {
-                const newText = prompt("Edit text:", state.text);
-                if (newText !== null && newText !== state.text) {
-                  onEditChange?.(asset.id, { text: newText });
-                }
+                setTimeout(() => {
+                  const newText = prompt("Edit text:", state.text ?? "");
+                  if (newText !== null) {
+                    onEditChange?.(asset.id, { text: newText });
+                  }
+                }, 0);
               }
             }}
             onDragEnd={(e) => {
@@ -176,10 +180,16 @@ export function SceneRenderer({
               // For rotation-only, group.x/y also shifts but shouldn't.
               //
               // Fix: use the transform matrix to find the actual center.
-              const transform = group.getTransform();
-              const center = transform.point({ x: 0, y: 0 });
-              const actualCx = center.x;
-              const actualCy = center.y;
+              // Determine if this is scale-only, rotation-only, or both
+              const isScaled = Math.abs(sx - 1) > 0.001 || Math.abs(sy - 1) > 0.001;
+              const isRotated = Math.abs(rot) > 0.1;
+
+              // For scale operations, Konva shifts group.x/y to keep anchor edge fixed.
+              // For rotation, we want center to stay put.
+              // Strategy: use group.x/y for the position delta from scaling,
+              // but for pure rotation keep the original center.
+              const gx = group.x();
+              const gy = group.y();
 
               // Reset group transform
               group.scaleX(1);
@@ -190,36 +200,34 @@ export function SceneRenderer({
               if (isArrow && state.points) {
                 const pts = state.points;
                 const newPts: number[] = [];
+                // For rotation-only: keep original center. For scale: use Konva's adjusted center.
+                const targetCx = isScaled ? gx : cx;
+                const targetCy = isScaled ? gy : cy;
                 for (let i = 0; i < pts.length; i += 2) {
-                  // Offset from original center, then scale
                   let lx = (pts[i] - cx) * sx;
                   let ly = (pts[i + 1] - cy) * sy;
-                  // Rotate
-                  if (Math.abs(rad) > 0.001) {
+                  if (isRotated) {
                     const rx = lx, ry = ly;
                     lx = rx * Math.cos(rad) - ry * Math.sin(rad);
                     ly = rx * Math.sin(rad) + ry * Math.cos(rad);
                   }
-                  // Place at actual visual center
-                  newPts.push(Math.round(actualCx + lx), Math.round(actualCy + ly));
+                  newPts.push(Math.round(targetCx + lx), Math.round(targetCy + ly));
                 }
                 onEditChange?.(asset.id, { points: newPts });
               } else {
-                // Regular shapes: store new dimensions + rotation + position
                 const changes: Record<string, unknown> = {};
                 if (state.width !== undefined) changes.width = Math.round(Math.abs(state.width * sx));
                 if (state.height !== undefined) changes.height = Math.round(Math.abs(state.height * sy));
                 if (state.radius !== undefined) changes.radius = Math.round(Math.abs(state.radius * Math.max(Math.abs(sx), Math.abs(sy))));
-                if (state.fontSize !== undefined && (Math.abs(sx - 1) > 0.01 || Math.abs(sy - 1) > 0.01)) {
+                if (state.fontSize !== undefined && isScaled) {
                   changes.fontSize = Math.round(Math.abs(state.fontSize * Math.max(Math.abs(sx), Math.abs(sy))));
                 }
-                // Store rotation as a shape property (accumulate with existing)
-                if (Math.abs(rot) > 0.1) {
+                if (isRotated) {
                   changes.rotation = Math.round(((state.rotation ?? 0) + rot) * 10) / 10;
                 }
-                // Use the actual visual center from transform matrix
-                changes.x = Math.round(actualCx);
-                changes.y = Math.round(actualCy);
+                // For scale: use Konva's adjusted position. For rotation-only: keep original.
+                changes.x = Math.round(isScaled ? gx : cx);
+                changes.y = Math.round(isScaled ? gy : cy);
                 onEditChange?.(asset.id, changes);
               }
             }}
