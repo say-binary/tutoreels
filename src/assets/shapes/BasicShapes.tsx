@@ -94,6 +94,7 @@ export function LineShape({ state }: ShapeProps) {
       points={points}
       stroke={state.stroke ?? "#666666"}
       strokeWidth={state.strokeWidth ?? 2}
+      hitStrokeWidth={20}
       opacity={state.opacity ?? 1}
       dash={state.dash}
       {...getShadowProps(state, false)}

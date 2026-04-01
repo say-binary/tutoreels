@@ -20,6 +20,7 @@ export function ArrowShape({ state }: ShapeProps) {
       strokeWidth={state.strokeWidth ?? 2}
       pointerLength={10}
       pointerWidth={10}
+      hitStrokeWidth={20}
       opacity={state.opacity ?? 1}
       dash={state.dash}
       {...getShadowProps(state, false)}

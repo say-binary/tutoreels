@@ -133,6 +133,12 @@ export function SceneRenderer({
               const newCx = group.x();
               const newCy = group.y();
 
+              // If the group was scaled/rotated (transform happened), skip drag handling
+              // onTransformEnd handles it instead
+              if (Math.abs(group.scaleX() - 1) > 0.001 || Math.abs(group.scaleY() - 1) > 0.001 || Math.abs(group.rotation()) > 0.01) {
+                return;
+              }
+
               // Multi-select: compute delta and move all
               if (selected.size > 1 && selected.has(asset.id)) {
                 const dx = newCx - cx;
@@ -199,17 +205,27 @@ export function SceneRenderer({
                 group.position({ x: 0, y: 0 });
                 onEditChange?.(asset.id, { points: newPts });
               } else {
-                // Regular shapes
+                // Regular shapes — compute new dimensions and center
                 const changes: Record<string, unknown> = {};
-                if (state.width !== undefined) changes.width = Math.round(Math.abs(state.width * sx));
-                if (state.height !== undefined) changes.height = Math.round(Math.abs(state.height * sy));
-                if (state.radius !== undefined) changes.radius = Math.round(Math.abs(state.radius * Math.max(sx, sy)));
-                // fontSize scales too
-                if (state.fontSize !== undefined) changes.fontSize = Math.round(Math.abs(state.fontSize * Math.max(sx, sy)));
+                const newW = state.width !== undefined ? Math.round(Math.abs(state.width * sx)) : undefined;
+                const newH = state.height !== undefined ? Math.round(Math.abs(state.height * sy)) : undefined;
+                if (newW !== undefined) changes.width = newW;
+                if (newH !== undefined) changes.height = newH;
+                if (state.radius !== undefined) changes.radius = Math.round(Math.abs(state.radius * Math.max(Math.abs(sx), Math.abs(sy))));
+                if (state.fontSize !== undefined && Math.abs(sx - 1) > 0.01) {
+                  changes.fontSize = Math.round(Math.abs(state.fontSize * Math.max(Math.abs(sx), Math.abs(sy))));
+                }
+
+                // The Group was at (cx, cy) before transform.
+                // Konva moved group.x/y to keep the opposite anchor fixed.
+                // group.x() IS the correct new center position.
                 changes.x = Math.round(newCx);
                 changes.y = Math.round(newCy);
-                // Group will reposition on next render
-                group.position({ x: 0, y: 0 });
+
+                group.position({ x: cx, y: cy }); // restore to original center so React re-render is smooth
+                group.scaleX(1);
+                group.scaleY(1);
+                group.rotation(0);
                 onEditChange?.(asset.id, changes);
               }
             }}
@@ -242,8 +258,8 @@ export function SceneRenderer({
           borderStrokeWidth={1.5}
           anchorStroke="#3b82f6"
           anchorFill="#1d4ed8"
-          anchorSize={8}
-          anchorCornerRadius={2}
+          anchorSize={12}
+          anchorCornerRadius={3}
           keepRatio={false}
           enabledAnchors={[
             "top-left", "top-right", "bottom-left", "bottom-right",
