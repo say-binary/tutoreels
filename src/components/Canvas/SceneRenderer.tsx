@@ -68,7 +68,8 @@ export function SceneRenderer({
       const localPts = pts.map((v, i) => v - (i % 2 === 0 ? cx : cy));
       return { ...state, x: 0, y: 0, points: localPts };
     }
-    return { ...state, x: 0, y: 0 };
+    // Strip rotation — it's applied at Group level in edit mode
+    return { ...state, x: 0, y: 0, rotation: 0 };
   }
 
   return (
@@ -99,9 +100,29 @@ export function SceneRenderer({
             ref={(node: Konva.Group | null) => setGroupRef(asset.id, node)}
             x={cx}
             y={cy}
+            rotation={(!isArrow && state.rotation) ? state.rotation : 0}
             draggable
             onClick={(e) => { e.cancelBubble = true; onSelect?.(asset.id, e.evt.shiftKey || e.evt.metaKey || e.evt.ctrlKey); }}
             onTap={(e) => { e.cancelBubble = true; onSelect?.(asset.id, false); }}
+            onDblClick={(e) => {
+              e.cancelBubble = true;
+              // Double-click on text/textBox to edit text inline
+              if (state.text !== undefined) {
+                const newText = prompt("Edit text:", state.text);
+                if (newText !== null && newText !== state.text) {
+                  onEditChange?.(asset.id, { text: newText });
+                }
+              }
+            }}
+            onDblTap={(e) => {
+              e.cancelBubble = true;
+              if (state.text !== undefined) {
+                const newText = prompt("Edit text:", state.text);
+                if (newText !== null && newText !== state.text) {
+                  onEditChange?.(asset.id, { text: newText });
+                }
+              }
+            }}
             onDragEnd={(e) => {
               const group = e.target;
               const newCx = group.x();
@@ -134,33 +155,57 @@ export function SceneRenderer({
             onTransformEnd={() => {
               const group = groupRefs.current.get(asset.id);
               if (!group) return;
-              const sx = group.scaleX(), sy = group.scaleY(), rot = group.rotation(), newCx = group.x(), newCy = group.y();
-              group.scaleX(1); group.scaleY(1); group.rotation(0);
+
+              const sx = group.scaleX();
+              const sy = group.scaleY();
+              const rot = group.rotation();
+              const rad = rot * Math.PI / 180;
+
+              // The Transformer moves group.x/y when scaling from edges.
+              // For resize: the position shift is intentional (keeps anchor edge fixed).
+              // For rotation: position should NOT change — only the shape rotates.
+              //
+              // Strategy: compute the center of the transformed bounding box.
+              // The Group's visual center after transform = group position +
+              // the group's local center (0,0) transformed by the group's matrix.
+              // Since our shapes are centered at (0,0) in the group, the visual
+              // center is simply the group's absolute position.
+              //
+              // But Konva's Transformer shifts group.x/y to keep anchors fixed.
+              // So group.x() IS the new visual center for resize operations.
+              // For rotation-only, group.x/y also shifts but shouldn't.
+              //
+              // Fix: use the transform matrix to find the actual center.
+              const transform = group.getTransform();
+              const center = transform.point({ x: 0, y: 0 });
+              const actualCx = center.x;
+              const actualCy = center.y;
+
+              // Reset group transform
+              group.scaleX(1);
+              group.scaleY(1);
+              group.rotation(0);
+              group.position({ x: cx, y: cy });
 
               if (isArrow && state.points) {
-                // For arrows: scale and rotate points around the original center (cx,cy)
-                // then apply the translation delta (how much the group moved)
                 const pts = state.points;
-                const rad = rot * Math.PI / 180;
-                const dx = newCx - cx; // translation delta from Transformer
-                const dy = newCy - cy;
                 const newPts: number[] = [];
                 for (let i = 0; i < pts.length; i += 2) {
-                  // Offset from center
+                  // Offset from original center, then scale
                   let lx = (pts[i] - cx) * sx;
                   let ly = (pts[i + 1] - cy) * sy;
-                  // Rotate around center
+                  // Rotate
                   if (Math.abs(rad) > 0.001) {
                     const rx = lx, ry = ly;
                     lx = rx * Math.cos(rad) - ry * Math.sin(rad);
                     ly = rx * Math.sin(rad) + ry * Math.cos(rad);
                   }
-                  // Restore to absolute coords + translation delta
-                  newPts.push(Math.round(cx + lx + dx), Math.round(cy + ly + dy));
+                  // Place at actual visual center
+                  newPts.push(Math.round(actualCx + lx), Math.round(actualCy + ly));
                 }
-                group.position({ x: 0, y: 0 });
                 onEditChange?.(asset.id, { points: newPts });
               } else {
+                // Regular shapes: store new dimensions + rotation + position
                 const changes: Record<string, unknown> = {};
                 if (state.width !== undefined) changes.width = Math.round(Math.abs(state.width * sx));
                 if (state.height !== undefined) changes.height = Math.round(Math.abs(state.height * sy));
@@ -168,9 +213,13 @@ export function SceneRenderer({
                 if (state.fontSize !== undefined && (Math.abs(sx - 1) > 0.01 || Math.abs(sy - 1) > 0.01)) {
                   changes.fontSize = Math.round(Math.abs(state.fontSize * Math.max(Math.abs(sx), Math.abs(sy))));
                 }
-                changes.x = Math.round(newCx);
-                changes.y = Math.round(newCy);
-                group.position({ x: cx, y: cy });
+                // Store rotation as a shape property (accumulate with existing)
+                if (Math.abs(rot) > 0.1) {
+                  changes.rotation = Math.round(((state.rotation ?? 0) + rot) * 10) / 10;
+                }
+                // Use the actual visual center from transform matrix
+                changes.x = Math.round(actualCx);
+                changes.y = Math.round(actualCy);
                 onEditChange?.(asset.id, changes);
               }
             }}
