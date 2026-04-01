@@ -138,17 +138,25 @@ export function SceneRenderer({
               group.scaleX(1); group.scaleY(1); group.rotation(0);
 
               if (isArrow && state.points) {
+                // For arrows: scale and rotate points around the original center (cx,cy)
+                // then apply the translation delta (how much the group moved)
                 const pts = state.points;
                 const rad = rot * Math.PI / 180;
+                const dx = newCx - cx; // translation delta from Transformer
+                const dy = newCy - cy;
                 const newPts: number[] = [];
                 for (let i = 0; i < pts.length; i += 2) {
-                  let lx = (pts[i] - cx) * sx, ly = (pts[i + 1] - cy) * sy;
+                  // Offset from center
+                  let lx = (pts[i] - cx) * sx;
+                  let ly = (pts[i + 1] - cy) * sy;
+                  // Rotate around center
                   if (Math.abs(rad) > 0.001) {
                     const rx = lx, ry = ly;
                     lx = rx * Math.cos(rad) - ry * Math.sin(rad);
                     ly = rx * Math.sin(rad) + ry * Math.cos(rad);
                   }
-                  newPts.push(Math.round(lx + newCx), Math.round(ly + newCy));
+                  // Restore to absolute coords + translation delta
+                  newPts.push(Math.round(cx + lx + dx), Math.round(cy + ly + dy));
                 }
                 group.position({ x: 0, y: 0 });
                 onEditChange?.(asset.id, { points: newPts });
