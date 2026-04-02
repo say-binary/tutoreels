@@ -164,43 +164,86 @@ export function SceneRenderer({
               const sy = group.scaleY();
               const rot = group.rotation();
               const rad = rot * Math.PI / 180;
-
-              // The Transformer moves group.x/y when scaling from edges.
-              // For resize: the position shift is intentional (keeps anchor edge fixed).
-              // For rotation: position should NOT change — only the shape rotates.
-              //
-              // Strategy: compute the center of the transformed bounding box.
-              // The Group's visual center after transform = group position +
-              // the group's local center (0,0) transformed by the group's matrix.
-              // Since our shapes are centered at (0,0) in the group, the visual
-              // center is simply the group's absolute position.
-              //
-              // But Konva's Transformer shifts group.x/y to keep anchors fixed.
-              // So group.x() IS the new visual center for resize operations.
-              // For rotation-only, group.x/y also shifts but shouldn't.
-              //
-              // Fix: use the transform matrix to find the actual center.
-              // Determine if this is scale-only, rotation-only, or both
               const isScaled = Math.abs(sx - 1) > 0.001 || Math.abs(sy - 1) > 0.001;
               const isRotated = Math.abs(rot) > 0.1;
-
-              // For scale operations, Konva shifts group.x/y to keep anchor edge fixed.
-              // For rotation, we want center to stay put.
-              // Strategy: use group.x/y for the position delta from scaling,
-              // but for pure rotation keep the original center.
               const gx = group.x();
               const gy = group.y();
 
-              // Reset group transform
+              // Reset this group's transform
               group.scaleX(1);
               group.scaleY(1);
               group.rotation(0);
               group.position({ x: cx, y: cy });
 
+              // If multi-selected, apply the same transform to ALL selected siblings
+              // Each sibling got its own transform from the Transformer, so we read
+              // their individual positions and reset them too.
+              if (selected.size > 1 && selected.has(asset.id)) {
+                const batch: Array<{ id: string; changes: Record<string, unknown> }> = [];
+
+                for (const sibId of selected) {
+                  const sibGroup = groupRefs.current.get(sibId);
+                  const sibState = states.get(sibId);
+                  const sibAsset = assets.find((a) => a.id === sibId);
+                  if (!sibGroup || !sibState || !sibAsset) continue;
+
+                  const sibSx = sibGroup.scaleX();
+                  const sibSy = sibGroup.scaleY();
+                  const sibRot = sibGroup.rotation();
+                  const sibRad = sibRot * Math.PI / 180;
+                  const sibGx = sibGroup.x();
+                  const sibGy = sibGroup.y();
+                  const sibIsScaled = Math.abs(sibSx - 1) > 0.001 || Math.abs(sibSy - 1) > 0.001;
+                  const sibIsRotated = Math.abs(sibRot) > 0.1;
+                  const { cx: sibCx, cy: sibCy } = getShapeCenter(sibState, sibAsset.type);
+                  const sibIsArrow = sibAsset.type === "arrow" || sibAsset.type === "line";
+
+                  // Reset sibling transform
+                  sibGroup.scaleX(1);
+                  sibGroup.scaleY(1);
+                  sibGroup.rotation(0);
+                  sibGroup.position({ x: sibCx, y: sibCy });
+
+                  if (sibIsArrow && sibState.points) {
+                    const pts = sibState.points;
+                    const newPts: number[] = [];
+                    const tCx = sibIsScaled ? sibGx : sibCx;
+                    const tCy = sibIsScaled ? sibGy : sibCy;
+                    for (let i = 0; i < pts.length; i += 2) {
+                      let lx = (pts[i] - sibCx) * sibSx;
+                      let ly = (pts[i + 1] - sibCy) * sibSy;
+                      if (sibIsRotated) {
+                        const rx = lx, ry = ly;
+                        lx = rx * Math.cos(sibRad) - ry * Math.sin(sibRad);
+                        ly = rx * Math.sin(sibRad) + ry * Math.cos(sibRad);
+                      }
+                      newPts.push(Math.round(tCx + lx), Math.round(tCy + ly));
+                    }
+                    batch.push({ id: sibId, changes: { points: newPts } });
+                  } else {
+                    const changes: Record<string, unknown> = {};
+                    if (sibState.width !== undefined) changes.width = Math.round(Math.abs(sibState.width * sibSx));
+                    if (sibState.height !== undefined) changes.height = Math.round(Math.abs(sibState.height * sibSy));
+                    if (sibState.radius !== undefined) changes.radius = Math.round(Math.abs(sibState.radius * Math.max(Math.abs(sibSx), Math.abs(sibSy))));
+                    if (sibState.fontSize !== undefined && sibIsScaled) {
+                      changes.fontSize = Math.round(Math.abs(sibState.fontSize * Math.max(Math.abs(sibSx), Math.abs(sibSy))));
+                    }
+                    if (sibIsRotated) {
+                      changes.rotation = Math.round(((sibState.rotation ?? 0) + sibRot) * 10) / 10;
+                    }
+                    changes.x = Math.round(sibIsScaled ? sibGx : sibCx);
+                    changes.y = Math.round(sibIsScaled ? sibGy : sibCy);
+                    batch.push({ id: sibId, changes });
+                  }
+                }
+                onBatchEditChange?.(batch);
+                return;
+              }
+
+              // Single shape transform
               if (isArrow && state.points) {
                 const pts = state.points;
                 const newPts: number[] = [];
-                // For rotation-only: keep original center. For scale: use Konva's adjusted center.
                 const targetCx = isScaled ? gx : cx;
                 const targetCy = isScaled ? gy : cy;
                 for (let i = 0; i < pts.length; i += 2) {
@@ -225,7 +268,6 @@ export function SceneRenderer({
                 if (isRotated) {
                   changes.rotation = Math.round(((state.rotation ?? 0) + rot) * 10) / 10;
                 }
-                // For scale: use Konva's adjusted position. For rotation-only: keep original.
                 changes.x = Math.round(isScaled ? gx : cx);
                 changes.y = Math.round(isScaled ? gy : cy);
                 onEditChange?.(asset.id, changes);
