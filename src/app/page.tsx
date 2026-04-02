@@ -290,21 +290,22 @@ export default function Home() {
     editingRef.current = true; // prevent the reset effect from firing
     const sg = structuredClone(sceneGraph);
 
-    // 1. Apply property overrides to existing assets
-    for (const [id, changes] of overrides) {
-      const asset = sg.assets.find((a) => a.id === id);
-      if (asset) asset.initialState = { ...asset.initialState, ...changes };
-    }
-
-    // 2. Add new assets + appear actions
+    // 1. Add new assets FIRST (so overrides can find them)
     for (const newAsset of pendingAdds) {
-      sg.assets.push(newAsset);
+      // Set visible: false so shape doesn't appear before its checkpoint
+      sg.assets.push({ ...newAsset, visible: false });
       sg.timeline.push({
         id: `appear_${newAsset.id}`,
         startTime: Math.max(0, currentTime - 0.1),
         duration: 0.5,
         actions: [{ targetId: newAsset.id, type: "appear", effect: "fade" }],
       });
+    }
+
+    // 2. Apply property overrides to ALL assets (existing + newly added)
+    for (const [id, changes] of overrides) {
+      const asset = sg.assets.find((a) => a.id === id);
+      if (asset) asset.initialState = { ...asset.initialState, ...changes };
     }
 
     // 3. Add disappear actions for deleted assets
