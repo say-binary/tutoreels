@@ -287,46 +287,36 @@ export default function Home() {
     const hasChanges = overrides.size > 0 || pendingAdds.length > 0 || pendingDeletes.size > 0;
     if (!hasChanges) { handleExitEdit(); return; }
 
-    editingRef.current = true; // prevent the reset effect from firing
+    editingRef.current = true;
     const sg = structuredClone(sceneGraph);
 
-    // Safe fields to copy from overrides — NEVER copy animation runtime fields
-    const SAFE_FIELDS = ['x', 'y', 'width', 'height', 'radius', 'rotation', 'fill', 'stroke',
-      'strokeWidth', 'text', 'fontSize', 'fontStyle', 'cornerRadius', 'points', 'numPoints',
-      'innerRadius', 'dash', 'blink', 'blinkColor', 'blinkSpeed',
-      'shadowColor', 'shadowBlur', 'shadowOffsetX', 'shadowOffsetY', 'shadowOpacity'] as const;
+    // 1. For EVERY existing asset: if its visual state (from mergedStates)
+    //    differs from initialState, update initialState to match exactly
+    //    what's on screen. This preserves ALL edits — position, size,
+    //    rotation, color, text, everything.
+    for (const asset of sg.assets) {
+      const ms = mergedStates.get(asset.id);
+      if (!ms) continue;
+      // Copy every property from the visual state EXCEPT runtime-only fields
+      const { visible: _v, opacity: _o, scaleX: _sx, scaleY: _sy, ...visualProps } = ms;
+      asset.initialState = { ...asset.initialState, ...visualProps };
+    }
 
-    // 1. Add new assets with their overrides applied (safe fields only)
+    // 2. Add new assets — use their visual state from mergedStates as initialState
     for (const newAsset of pendingAdds) {
-      const editChanges = overrides.get(newAsset.id);
-      const savedState = { ...newAsset.initialState };
-      if (editChanges) {
-        for (const key of SAFE_FIELDS) {
-          if (key in editChanges) {
-            (savedState as unknown as Record<string, unknown>)[key] = editChanges[key as keyof typeof editChanges];
-          }
-        }
+      const ms = mergedStates.get(newAsset.id);
+      if (ms) {
+        const { visible: _v, opacity: _o, scaleX: _sx, scaleY: _sy, ...visualProps } = ms;
+        sg.assets.push({ ...newAsset, initialState: { ...newAsset.initialState, ...visualProps }, visible: false });
+      } else {
+        sg.assets.push({ ...newAsset, visible: false });
       }
-      sg.assets.push({ ...newAsset, initialState: savedState, visible: false });
       sg.timeline.push({
         id: `appear_${newAsset.id}`,
         startTime: Math.max(0, currentTime - 0.1),
         duration: 0.5,
         actions: [{ targetId: newAsset.id, type: "appear", effect: "fade" }],
       });
-    }
-
-    // 2. Apply overrides to existing assets (safe fields only)
-    for (const [id, changes] of overrides) {
-      if (pendingAdds.some((a) => a.id === id)) continue;
-      const asset = sg.assets.find((a) => a.id === id);
-      if (asset) {
-        for (const key of SAFE_FIELDS) {
-          if (key in changes) {
-            (asset.initialState as unknown as Record<string, unknown>)[key] = changes[key as keyof typeof changes];
-          }
-        }
-      }
     }
 
     // 3. Add disappear actions for deleted assets
@@ -343,7 +333,7 @@ export default function Home() {
     setSceneGraph(sg);
     handleExitEdit();
     setTimeout(() => seek(currentTime), 50);
-  }, [sceneGraph, overrides, pendingAdds, pendingDeletes, currentTime, handleExitEdit, seek]);
+  }, [sceneGraph, overrides, pendingAdds, pendingDeletes, currentTime, handleExitEdit, seek, mergedStates]);
 
   // Arrow key nudge
   const handleArrowMove = useCallback((dx: number, dy: number) => {
