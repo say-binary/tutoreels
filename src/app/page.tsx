@@ -290,10 +290,18 @@ export default function Home() {
     editingRef.current = true; // prevent the reset effect from firing
     const sg = structuredClone(sceneGraph);
 
-    // 1. Add new assets FIRST (so overrides can find them)
+    // 1. Add new assets — use mergedStates to capture the FINAL visual state
+    //    (includes all drag/resize/rotate edits the user made)
     for (const newAsset of pendingAdds) {
-      // Set visible: false so shape doesn't appear before its checkpoint
-      sg.assets.push({ ...newAsset, visible: false });
+      const finalState = mergedStates.get(newAsset.id);
+      const savedInitialState = finalState
+        ? { ...newAsset.initialState, ...finalState, visible: undefined, opacity: undefined }
+        : newAsset.initialState;
+      // Clean up runtime-only fields
+      delete (savedInitialState as unknown as Record<string, unknown>).visible;
+      delete (savedInitialState as unknown as Record<string, unknown>).opacity;
+
+      sg.assets.push({ ...newAsset, initialState: savedInitialState, visible: false });
       sg.timeline.push({
         id: `appear_${newAsset.id}`,
         startTime: Math.max(0, currentTime - 0.1),
@@ -302,10 +310,32 @@ export default function Home() {
       });
     }
 
-    // 2. Apply property overrides to ALL assets (existing + newly added)
+    // 2. Apply property overrides to existing assets
+    //    Use mergedStates for position/size/rotation to capture sticky label moves too
     for (const [id, changes] of overrides) {
+      if (pendingAdds.some((a) => a.id === id)) continue;
       const asset = sg.assets.find((a) => a.id === id);
-      if (asset) asset.initialState = { ...asset.initialState, ...changes };
+      if (asset) {
+        // Apply the override changes to initialState
+        asset.initialState = { ...asset.initialState, ...changes };
+      }
+    }
+
+    // 2b. Also check: any shape that was moved via sticky labels might have
+    //     its position in mergedStates but NOT in overrides (if the batch
+    //     edit already saved it). Double-check by comparing mergedStates to
+    //     the current initialState for position fields.
+    for (const asset of sg.assets) {
+      const ms = mergedStates.get(asset.id);
+      if (!ms) continue;
+      // Only update position/size/rotation fields if they differ
+      if (ms.x !== undefined && ms.x !== asset.initialState.x) asset.initialState.x = Math.round(ms.x);
+      if (ms.y !== undefined && ms.y !== asset.initialState.y) asset.initialState.y = Math.round(ms.y);
+      if (ms.width !== undefined && asset.initialState.width !== undefined && ms.width !== asset.initialState.width) asset.initialState.width = Math.round(ms.width);
+      if (ms.height !== undefined && asset.initialState.height !== undefined && ms.height !== asset.initialState.height) asset.initialState.height = Math.round(ms.height);
+      if (ms.radius !== undefined && asset.initialState.radius !== undefined && ms.radius !== asset.initialState.radius) asset.initialState.radius = Math.round(ms.radius);
+      if (ms.rotation !== undefined && ms.rotation !== (asset.initialState.rotation ?? 0)) asset.initialState.rotation = ms.rotation;
+      if (ms.fontSize !== undefined && asset.initialState.fontSize !== undefined && ms.fontSize !== asset.initialState.fontSize) asset.initialState.fontSize = Math.round(ms.fontSize);
     }
 
     // 3. Add disappear actions for deleted assets
@@ -322,7 +352,7 @@ export default function Home() {
     setSceneGraph(sg);
     handleExitEdit();
     setTimeout(() => seek(currentTime), 50);
-  }, [sceneGraph, overrides, pendingAdds, pendingDeletes, currentTime, handleExitEdit, seek]);
+  }, [sceneGraph, overrides, pendingAdds, pendingDeletes, currentTime, handleExitEdit, seek, mergedStates]);
 
   // Arrow key nudge
   const handleArrowMove = useCallback((dx: number, dy: number) => {
