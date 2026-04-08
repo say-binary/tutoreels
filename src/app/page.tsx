@@ -15,6 +15,9 @@ import { demoBinarySearch } from "@/lib/demoBinarySearch";
 import { demoHashMap } from "@/lib/demoHashMap";
 import { demoTCPHandshake } from "@/lib/demoTCPHandshake";
 import { demoMultiAgent } from "@/lib/demoMultiAgent";
+import { demoTokenization } from "@/lib/demoTokenization";
+import { demoEmbedding } from "@/lib/demoEmbedding";
+import { demoPositionalEncoding } from "@/lib/demoPositionalEncoding";
 import { SavedAnimations } from "@/components/Input/SavedAnimations";
 import { saveToLocalStorage } from "@/lib/savedStorage";
 
@@ -29,6 +32,9 @@ const DEMOS: { label: string; sg: SceneGraph }[] = [
   { label: "Hash Map", sg: demoHashMap },
   { label: "TCP Handshake", sg: demoTCPHandshake },
   { label: "Multi-Agent", sg: demoMultiAgent },
+  { label: "Tokenization", sg: demoTokenization },
+  { label: "Embedding", sg: demoEmbedding },
+  { label: "Pos. Encoding", sg: demoPositionalEncoding },
 ];
 
 export default function Home() {
