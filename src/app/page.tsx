@@ -290,31 +290,33 @@ export default function Home() {
     editingRef.current = true;
     const sg = structuredClone(sceneGraph);
 
-    // 1. Apply overrides ONLY to assets that were actually edited.
-    //    Use the visual state from mergedStates (which includes overrides)
-    //    but ONLY for edited assets — unedited assets keep their original initialState.
-    for (const [id, _changes] of overrides) {
-      // Skip pending adds — handled below
+    // 1. Apply ONLY the raw overrides to edited assets.
+    //    The overrides map contains exactly what the user changed — x, y, width,
+    //    height, rotation, text, fill, etc. No animation runtime state.
+    for (const [id, changes] of overrides) {
       if (pendingAdds.some((a) => a.id === id)) continue;
       const asset = sg.assets.find((a) => a.id === id);
       if (!asset) continue;
-      const ms = mergedStates.get(id);
-      if (ms) {
-        // Take the exact visual state, strip runtime-only fields
-        const { visible: _v, opacity: _o, scaleX: _sx, scaleY: _sy, ...visualProps } = ms;
-        asset.initialState = { ...asset.initialState, ...visualProps };
+      // Apply each override property directly to initialState
+      for (const [key, value] of Object.entries(changes)) {
+        if (value !== undefined && key !== "visible" && key !== "opacity" && key !== "scaleX" && key !== "scaleY") {
+          (asset.initialState as unknown as Record<string, unknown>)[key] = value;
+        }
       }
     }
 
-    // 2. Add new assets — use their visual state from mergedStates as initialState
+    // 2. Add new assets with their overrides applied
     for (const newAsset of pendingAdds) {
-      const ms = mergedStates.get(newAsset.id);
-      if (ms) {
-        const { visible: _v, opacity: _o, scaleX: _sx, scaleY: _sy, ...visualProps } = ms;
-        sg.assets.push({ ...newAsset, initialState: { ...newAsset.initialState, ...visualProps }, visible: false });
-      } else {
-        sg.assets.push({ ...newAsset, visible: false });
+      const changes = overrides.get(newAsset.id);
+      const savedState = { ...newAsset.initialState };
+      if (changes) {
+        for (const [key, value] of Object.entries(changes)) {
+          if (value !== undefined && key !== "visible" && key !== "opacity" && key !== "scaleX" && key !== "scaleY") {
+            (savedState as unknown as Record<string, unknown>)[key] = value;
+          }
+        }
       }
+      sg.assets.push({ ...newAsset, initialState: savedState, visible: false });
       sg.timeline.push({
         id: `appear_${newAsset.id}`,
         startTime: Math.max(0, currentTime - 0.1),
@@ -337,7 +339,7 @@ export default function Home() {
     setSceneGraph(sg);
     handleExitEdit();
     setTimeout(() => seek(currentTime), 50);
-  }, [sceneGraph, overrides, pendingAdds, pendingDeletes, currentTime, handleExitEdit, seek, mergedStates]);
+  }, [sceneGraph, overrides, pendingAdds, pendingDeletes, currentTime, handleExitEdit, seek]);
 
   // Arrow key nudge
   const handleArrowMove = useCallback((dx: number, dy: number) => {
