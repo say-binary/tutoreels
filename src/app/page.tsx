@@ -4,8 +4,12 @@ import dynamic from "next/dynamic";
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { TextInputPanel } from "@/components/Input/TextInputPanel";
 import { PlaybackControls } from "@/components/Controls/PlaybackControls";
+import { EditToolbar } from "@/components/Editor/EditToolbar";
+import { PropertiesPanel } from "@/components/Editor/PropertiesPanel";
 import { useAnimationEngine } from "@/hooks/useAnimationEngine";
-import type { SceneGraph, ShapeState } from "@/types/sceneGraph";
+import { useEditHistory } from "@/hooks/useEditHistory";
+import type { SceneGraph, AssetType, ShapeState } from "@/types/sceneGraph";
+import type { ComputedAssetState } from "@/engine/AnimationEngine";
 import { demoSceneGraph } from "@/lib/demoSceneGraph";
 import { demoBinarySearch } from "@/lib/demoBinarySearch";
 import { demoHashMap } from "@/lib/demoHashMap";
@@ -16,11 +20,6 @@ import { saveToLocalStorage } from "@/lib/savedStorage";
 
 const CanvasWorkspace = dynamic(
   () => import("@/components/Canvas/CanvasWorkspace").then((m) => m.CanvasWorkspace),
-  { ssr: false }
-);
-
-const TldrawEditor = dynamic(
-  () => import("@/components/Editor/TldrawEditor").then((m) => m.TldrawEditor),
   { ssr: false }
 );
 
@@ -44,21 +43,43 @@ export default function Home() {
   const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const autoPlayRef = useRef(false);
 
-  // Edit mode — tldraw-based
+  // Edit mode
   const [editMode, setEditMode] = useState(false);
-  const editingRef = useRef(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const { overrides, applyEdit, undo, redo, canUndo, canRedo, resetHistory } = useEditHistory();
+  const [pendingAdds, setPendingAdds] = useState<SceneGraph["assets"]>([]);
+  const [pendingDeletes, setPendingDeletes] = useState<Set<string>>(new Set());
+  const editingRef = useRef(false); // prevents sceneGraph reset effect during edits
 
   const { states, currentTime, duration, playing, speed, play, pause, reset, seek, setSpeed } =
     useAnimationEngine(sceneGraph);
 
-  // Assets list for edit mode — includes all visible assets at current time
-  const editAssets = useMemo(() => {
-    if (!sceneGraph || !editMode) return [];
-    return sceneGraph.assets.filter((a) => {
-      const s = states.get(a.id);
-      return s && (s.visible || (s.opacity !== undefined && s.opacity > 0));
-    });
-  }, [sceneGraph, states, editMode]);
+  // Merge engine states with edit overrides, pending adds, pending deletes
+  const mergedStates = useMemo(() => {
+    if (!editMode) return states;
+    const merged = new Map(states);
+
+    // 1. Add pending new assets FIRST (they don't exist in engine yet)
+    for (const asset of pendingAdds) {
+      if (!merged.has(asset.id)) {
+        merged.set(asset.id, { ...asset.initialState, visible: true, opacity: 1 } as ComputedAssetState);
+      }
+    }
+
+    // 2. Apply overrides AFTER — so they can modify both existing and pending shapes
+    for (const [id, changes] of overrides) {
+      const existing = merged.get(id);
+      if (existing) merged.set(id, { ...existing, ...changes } as ComputedAssetState);
+    }
+
+    // 3. Hide pending deletes
+    for (const id of pendingDeletes) {
+      const existing = merged.get(id);
+      if (existing) merged.set(id, { ...existing, visible: false, opacity: 0 } as ComputedAssetState);
+    }
+
+    return merged;
+  }, [states, editMode, overrides, pendingAdds, pendingDeletes]);
 
   // Auto-play
   useEffect(() => {
@@ -69,10 +90,15 @@ export default function Home() {
     }
   }, [sceneGraph, play]);
 
-  // Reset edit mode on scene graph change
+  // Reset edit mode on scene graph change — but NOT when edit actions modify it
   useEffect(() => {
     if (editingRef.current) { editingRef.current = false; return; }
     setEditMode(false);
+    setSelectedIds(new Set());
+    setPendingAdds([]);
+    setPendingDeletes(new Set());
+    resetHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sceneGraph]);
 
   // --- Non-edit handlers ---
@@ -130,38 +156,165 @@ export default function Home() {
     setTimeout(() => setShowSaveConfirm(false), 2000);
   }, [sceneGraph, lastPrompt]);
 
-  // --- Edit mode handlers (tldraw-based) ---
+  // --- Edit mode handlers ---
   const handleEnterEdit = useCallback(() => {
     pause();
     setEditMode(true);
-  }, [pause]);
+    setSelectedIds(new Set());
+    setPendingAdds([]);
+    setPendingDeletes(new Set());
+    resetHistory();
+  }, [pause, resetHistory]);
 
   const handleExitEdit = useCallback(() => {
     setEditMode(false);
+    setSelectedIds(new Set());
+    setPendingAdds([]);
+    setPendingDeletes(new Set());
+    resetHistory();
+  }, [resetHistory]);
+
+  const handleSelect = useCallback((id: string | null, additive: boolean) => {
+    if (!id) { setSelectedIds(new Set()); return; }
+    if (additive) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id); else next.add(id);
+        return next;
+      });
+    } else {
+      setSelectedIds(new Set([id]));
+    }
   }, []);
 
-  // Called when tldraw Save & Exit is clicked
-  const handleTldrawSave = useCallback((result: { updates: Map<string, Partial<ShapeState>>; newAssets: import("@/types/sceneGraph").AssetInstance[] }) => {
+  const handleRubberBandSelect = useCallback((ids: string[]) => {
+    setSelectedIds(new Set(ids));
+  }, []);
+
+  // Single shape edit (drag end, transform end, property change)
+  const handleEditChange = useCallback((id: string, changes: Record<string, unknown>) => {
+    applyEdit((prev) => {
+      const next = new Map(prev);
+      const existing = next.get(id) || {};
+      next.set(id, { ...existing, ...changes });
+      return next;
+    });
+  }, [applyEdit]);
+
+  // Batch edit (multi-drag)
+  const handleBatchEditChange = useCallback((batch: Array<{ id: string; changes: Record<string, unknown> }>) => {
+    applyEdit((prev) => {
+      const next = new Map(prev);
+      for (const { id, changes } of batch) {
+        const existing = next.get(id) || {};
+        next.set(id, { ...existing, ...changes });
+      }
+      return next;
+    });
+  }, [applyEdit]);
+
+  // Toggle blink on selected shapes
+  const handleToggleBlink = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    applyEdit((prev) => {
+      const next = new Map(prev);
+      // Check if any selected shape is already blinking
+      let anyBlinking = false;
+      for (const id of selectedIds) {
+        const existing = next.get(id);
+        const curState = mergedStates.get(id);
+        const isOn = (existing?.blink as boolean | undefined) ?? curState?.blink ?? false;
+        if (isOn) { anyBlinking = true; break; }
+      }
+      // Toggle: if any are blinking, turn all off. Otherwise turn all on.
+      for (const id of selectedIds) {
+        const existing = next.get(id) || {};
+        next.set(id, { ...existing, blink: !anyBlinking });
+      }
+      return next;
+    });
+  }, [selectedIds, applyEdit, mergedStates]);
+
+  // Property panel change — goes through same applyEdit
+  const handlePropertyChange = useCallback((assetId: string, key: string, value: string | number) => {
+    applyEdit((prev) => {
+      const next = new Map(prev);
+      const existing = next.get(assetId) || {};
+      next.set(assetId, { ...existing, [key]: value });
+      return next;
+    });
+  }, [applyEdit]);
+
+  // Add shape — deferred to save checkpoint
+  const handleAddShape = useCallback((type: AssetType) => {
+    if (!sceneGraph) return;
+    const id = `edit_${type}_${Date.now()}`;
+    const defaults: Record<string, ShapeState> = {
+      rect: { x: 640, y: 360, width: 120, height: 80, fill: "#4A90D9", stroke: "#FFFFFF", strokeWidth: 2 },
+      roundedRect: { x: 640, y: 360, width: 120, height: 80, fill: "#50C878", stroke: "#FFFFFF", strokeWidth: 2, cornerRadius: 10 },
+      circle: { x: 640, y: 360, radius: 40, fill: "#E6A817", stroke: "#FFFFFF", strokeWidth: 2 },
+      ellipse: { x: 640, y: 360, width: 120, height: 70, fill: "#9B59B6", stroke: "#FFFFFF", strokeWidth: 2 },
+      star: { x: 640, y: 360, radius: 35, numPoints: 5, innerRadius: 15, fill: "#F4D03F", stroke: "#E6A817", strokeWidth: 2 },
+      polygon: { x: 640, y: 360, radius: 35, numPoints: 6, fill: "#2EC4B6", stroke: "#FFFFFF", strokeWidth: 2 },
+      diamond: { x: 640, y: 360, width: 80, height: 80, fill: "#E74C3C", stroke: "#FFFFFF", strokeWidth: 2 },
+      arrow: { x: 0, y: 0, points: [540, 360, 740, 360], stroke: "#E6A817", strokeWidth: 2 },
+      line: { x: 0, y: 0, points: [540, 360, 740, 360], stroke: "#95A5A6", strokeWidth: 2 },
+      text: { x: 640, y: 360, text: "New Text", fontSize: 20, fill: "#FFFFFF" },
+      textBox: { x: 640, y: 360, width: 120, height: 40, text: "Label", fontSize: 14, fill: "#2C3E50", stroke: "#FFFFFF" },
+      container: { x: 640, y: 360, width: 200, height: 120, fill: "#0d1220", stroke: "#95A5A6", text: "Group" },
+    };
+    const newAsset = { id, type: type as SceneGraph["assets"][0]["type"], initialState: defaults[type] || defaults.rect, visible: true };
+    setPendingAdds((prev) => [...prev, newAsset]);
+    setSelectedIds(new Set([id]));
+  }, [sceneGraph]);
+
+  // Delete selected — deferred to save checkpoint
+  const handleDeleteSelected = useCallback(() => {
+    if (selectedIds.size === 0) return;
+    setPendingDeletes((prev) => {
+      const next = new Set(prev);
+      for (const id of selectedIds) next.add(id);
+      return next;
+    });
+    // Also remove from pending adds if it was just added
+    setPendingAdds((prev) => prev.filter((a) => !selectedIds.has(a.id)));
+    setSelectedIds(new Set());
+  }, [selectedIds]);
+
+  // Save checkpoint — apply ALL pending changes to scene graph at once
+  const handleSaveCheckpoint = useCallback(() => {
     if (!sceneGraph) { handleExitEdit(); return; }
-    const { updates, newAssets } = result;
-    if (updates.size === 0 && newAssets.length === 0) {
-      handleExitEdit();
-      return;
-    }
+    const hasChanges = overrides.size > 0 || pendingAdds.length > 0 || pendingDeletes.size > 0;
+    if (!hasChanges) { handleExitEdit(); return; }
+
     editingRef.current = true;
     const sg = structuredClone(sceneGraph);
 
-    // 1. Apply position/size/rotation updates to existing assets
-    for (const [id, changes] of updates) {
+    // 1. Apply overrides ONLY to assets that were actually edited.
+    //    Use the visual state from mergedStates (which includes overrides)
+    //    but ONLY for edited assets — unedited assets keep their original initialState.
+    for (const [id, _changes] of overrides) {
+      // Skip pending adds — handled below
+      if (pendingAdds.some((a) => a.id === id)) continue;
       const asset = sg.assets.find((a) => a.id === id);
-      if (asset) {
-        asset.initialState = { ...asset.initialState, ...changes };
+      if (!asset) continue;
+      const ms = mergedStates.get(id);
+      if (ms) {
+        // Take the exact visual state, strip runtime-only fields
+        const { visible: _v, opacity: _o, scaleX: _sx, scaleY: _sy, ...visualProps } = ms;
+        asset.initialState = { ...asset.initialState, ...visualProps };
       }
     }
 
-    // 2. Add new assets created in tldraw
-    for (const newAsset of newAssets) {
-      sg.assets.push({ ...newAsset, visible: false });
+    // 2. Add new assets — use their visual state from mergedStates as initialState
+    for (const newAsset of pendingAdds) {
+      const ms = mergedStates.get(newAsset.id);
+      if (ms) {
+        const { visible: _v, opacity: _o, scaleX: _sx, scaleY: _sy, ...visualProps } = ms;
+        sg.assets.push({ ...newAsset, initialState: { ...newAsset.initialState, ...visualProps }, visible: false });
+      } else {
+        sg.assets.push({ ...newAsset, visible: false });
+      }
       sg.timeline.push({
         id: `appear_${newAsset.id}`,
         startTime: Math.max(0, currentTime - 0.1),
@@ -170,11 +323,85 @@ export default function Home() {
       });
     }
 
+    // 3. Add disappear actions for deleted assets
+    for (const id of pendingDeletes) {
+      sg.timeline.push({
+        id: `del_${id}`,
+        startTime: currentTime,
+        duration: 0.3,
+        actions: [{ targetId: id, type: "disappear", effect: "fade" }],
+      });
+    }
+
     sg.timeline.sort((a, b) => a.startTime - b.startTime);
     setSceneGraph(sg);
     handleExitEdit();
     setTimeout(() => seek(currentTime), 50);
-  }, [sceneGraph, currentTime, handleExitEdit, seek]);
+  }, [sceneGraph, overrides, pendingAdds, pendingDeletes, currentTime, handleExitEdit, seek, mergedStates]);
+
+  // Arrow key nudge
+  const handleArrowMove = useCallback((dx: number, dy: number) => {
+    if (selectedIds.size === 0) return;
+    const batch: Array<{ id: string; changes: Record<string, unknown> }> = [];
+    for (const id of selectedIds) {
+      const s = mergedStates.get(id);
+      const a = sceneGraph?.assets.find((a) => a.id === id);
+      if (!s || !a) continue;
+      if ((a.type === "arrow" || a.type === "line") && s.points) {
+        batch.push({ id, changes: { points: s.points.map((v, i) => Math.round(v + (i % 2 === 0 ? dx : dy))) } });
+      } else {
+        batch.push({ id, changes: { x: Math.round((s.x ?? 0) + dx), y: Math.round((s.y ?? 0) + dy) } });
+      }
+    }
+    if (batch.length > 0) handleBatchEditChange(batch);
+  }, [selectedIds, mergedStates, sceneGraph, handleBatchEditChange]);
+
+  // Keyboard shortcuts in edit mode
+  useEffect(() => {
+    if (!editMode) return;
+    const handler = (e: KeyboardEvent) => {
+      const isInput = document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA";
+
+      if ((e.metaKey || e.ctrlKey) && e.key === "z") {
+        e.preventDefault();
+        e.shiftKey ? redo() : undo();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "a" && !isInput) {
+        e.preventDefault();
+        if (sceneGraph) {
+          const ids = sceneGraph.assets
+            .filter((a) => { const s = states.get(a.id); return s && (s.visible || (s.opacity !== undefined && s.opacity > 0)); })
+            .map((a) => a.id);
+          setSelectedIds(new Set(ids));
+        }
+        return;
+      }
+      if ((e.key === "Delete" || e.key === "Backspace") && !isInput && selectedIds.size > 0) {
+        e.preventDefault();
+        handleDeleteSelected();
+        return;
+      }
+      if (e.key === "Escape") { setSelectedIds(new Set()); return; }
+
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key) && !isInput) {
+        e.preventDefault();
+        const step = e.shiftKey ? 10 : 1;
+        const map: Record<string, [number, number]> = {
+          ArrowUp: [0, -step], ArrowDown: [0, step], ArrowLeft: [-step, 0], ArrowRight: [step, 0],
+        };
+        const [dx, dy] = map[e.key];
+        handleArrowMove(dx, dy);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [editMode, undo, redo, selectedIds, handleDeleteSelected, handleArrowMove, sceneGraph, states]);
+
+  // Properties panel info
+  const singleId = selectedIds.size === 1 ? [...selectedIds][0] : null;
+  const selectedAsset = singleId ? sceneGraph?.assets.find((a) => a.id === singleId) : null;
+  const selectedState = singleId ? mergedStates.get(singleId) : null;
 
   return (
     <div className="flex h-screen overflow-hidden bg-zinc-900 text-white">
@@ -252,27 +479,36 @@ export default function Home() {
         <div className={`flex-1 relative ${sceneGraph ? "" : "flex items-center justify-center"}`}>
           {sceneGraph ? (
             <>
-              {/* Playback canvas (hidden in edit mode) */}
-              {!editMode && (
-                <CanvasWorkspace
-                  assets={sceneGraph.assets}
-                  states={states}
-                  backgroundColor={sceneGraph.metadata.backgroundColor}
-                  canvasWidth={sceneGraph.metadata.canvasWidth}
-                  canvasHeight={sceneGraph.metadata.canvasHeight}
+              <CanvasWorkspace
+                assets={editMode ? [...sceneGraph.assets, ...pendingAdds].filter((a) => !pendingDeletes.has(a.id)) : sceneGraph.assets}
+                states={mergedStates}
+                backgroundColor={sceneGraph.metadata.backgroundColor}
+                canvasWidth={sceneGraph.metadata.canvasWidth}
+                canvasHeight={sceneGraph.metadata.canvasHeight}
+                editMode={editMode}
+                selectedAssetIds={selectedIds}
+                onSelectAsset={handleSelect}
+                onEditChange={handleEditChange}
+                onBatchEditChange={handleBatchEditChange}
+                onRubberBandSelect={handleRubberBandSelect}
+              />
+              {editMode && (
+                <EditToolbar
+                  selectedCount={selectedIds.size}
+                  isBlinking={singleId ? !!(mergedStates.get(singleId)?.blink) : false}
+                  onAddShape={handleAddShape}
+                  onDeleteSelected={handleDeleteSelected}
+                  onToggleBlink={handleToggleBlink}
+                  onSaveCheckpoint={handleSaveCheckpoint}
+                  onExitEdit={handleExitEdit}
+                  onUndo={undo}
+                  onRedo={redo}
+                  canUndo={canUndo}
+                  canRedo={canRedo}
                 />
               )}
-
-              {/* tldraw editor (shown in edit mode) */}
-              {editMode && (
-                <TldrawEditor
-                  assets={editAssets}
-                  states={states}
-                  canvasWidth={sceneGraph.metadata.canvasWidth ?? 1280}
-                  canvasHeight={sceneGraph.metadata.canvasHeight ?? 720}
-                  onSave={handleTldrawSave}
-                  onExit={handleExitEdit}
-                />
+              {editMode && selectedAsset && selectedState && singleId && (
+                <PropertiesPanel assetId={singleId} assetType={selectedAsset.type} state={selectedState} onPropertyChange={handlePropertyChange} />
               )}
             </>
           ) : (
@@ -308,7 +544,20 @@ export default function Home() {
           <PlaybackControls playing={playing} speed={speed} currentTime={currentTime} duration={duration}
             timelineEntries={sceneGraph.timeline} onPlay={play} onPause={pause} onReset={reset} onSeek={seek} onSpeedChange={setSpeed} />
         )}
-        {/* tldraw has its own status bar — no need for ours in edit mode */}
+        {sceneGraph && editMode && (
+          <div className="bg-zinc-800 border-t border-blue-500/30 px-4 py-2 flex items-center justify-between">
+            <span className="text-xs text-blue-400">
+              Editing at {Math.floor(currentTime / 60)}:{Math.floor(currentTime % 60).toString().padStart(2, "0")}
+            </span>
+            <span className="text-[10px] text-zinc-500">
+              {selectedIds.size > 0 && `${selectedIds.size} selected · `}
+              {(overrides.size + pendingAdds.length + pendingDeletes.size) > 0
+                ? `${overrides.size} edits, ${pendingAdds.length} added, ${pendingDeletes.size} deleted`
+                : "No changes"}
+              {canUndo && ` · Cmd+Z undo`}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );
