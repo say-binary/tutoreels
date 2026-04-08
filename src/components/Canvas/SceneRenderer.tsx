@@ -230,7 +230,7 @@ export function SceneRenderer({
                       changes.fontSize = Math.round(Math.abs(sibState.fontSize * Math.max(Math.abs(sibSx), Math.abs(sibSy))));
                     }
                     if (sibIsRotated) {
-                      changes.rotation = Math.round(((sibState.rotation ?? 0) + sibRot) * 10) / 10;
+                      changes.rotation = Math.round(sibRot * 10) / 10;
                     }
                     changes.x = Math.round(sibIsScaled ? sibGx : sibCx);
                     changes.y = Math.round(sibIsScaled ? sibGy : sibCy);
@@ -267,7 +267,10 @@ export function SceneRenderer({
                   changes.fontSize = Math.round(Math.abs(state.fontSize * Math.max(Math.abs(sx), Math.abs(sy))));
                 }
                 if (isRotated) {
-                  changes.rotation = Math.round(((state.rotation ?? 0) + rot) * 10) / 10;
+                  // rot from Transformer already includes the Group's initial rotation
+                  // (Group starts with rotation={state.rotation}, Transformer adds to it)
+                  // So rot IS the final rotation, not a delta — use it directly
+                  changes.rotation = Math.round(rot * 10) / 10;
                 }
                 const newShapeX = Math.round(isScaled ? gx : cx);
                 const newShapeY = Math.round(isScaled ? gy : cy);
