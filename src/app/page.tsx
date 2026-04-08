@@ -140,16 +140,18 @@ export default function Home() {
     setEditMode(false);
   }, []);
 
-  // Called when tldraw Save & Exit is clicked — receives updated positions from tldraw
-  const handleTldrawSave = useCallback((updates: Map<string, Partial<ShapeState>>) => {
-    if (!sceneGraph || updates.size === 0) {
+  // Called when tldraw Save & Exit is clicked
+  const handleTldrawSave = useCallback((result: { updates: Map<string, Partial<ShapeState>>; newAssets: import("@/types/sceneGraph").AssetInstance[] }) => {
+    if (!sceneGraph) { handleExitEdit(); return; }
+    const { updates, newAssets } = result;
+    if (updates.size === 0 && newAssets.length === 0) {
       handleExitEdit();
       return;
     }
     editingRef.current = true;
     const sg = structuredClone(sceneGraph);
 
-    // Apply every update from tldraw directly to the asset's initialState
+    // 1. Apply position/size/rotation updates to existing assets
     for (const [id, changes] of updates) {
       const asset = sg.assets.find((a) => a.id === id);
       if (asset) {
@@ -157,6 +159,18 @@ export default function Home() {
       }
     }
 
+    // 2. Add new assets created in tldraw
+    for (const newAsset of newAssets) {
+      sg.assets.push({ ...newAsset, visible: false });
+      sg.timeline.push({
+        id: `appear_${newAsset.id}`,
+        startTime: Math.max(0, currentTime - 0.1),
+        duration: 0.5,
+        actions: [{ targetId: newAsset.id, type: "appear", effect: "fade" }],
+      });
+    }
+
+    sg.timeline.sort((a, b) => a.startTime - b.startTime);
     setSceneGraph(sg);
     handleExitEdit();
     setTimeout(() => seek(currentTime), 50);
@@ -254,6 +268,8 @@ export default function Home() {
                 <TldrawEditor
                   assets={editAssets}
                   states={states}
+                  canvasWidth={sceneGraph.metadata.canvasWidth ?? 1280}
+                  canvasHeight={sceneGraph.metadata.canvasHeight ?? 720}
                   onSave={handleTldrawSave}
                   onExit={handleExitEdit}
                 />
