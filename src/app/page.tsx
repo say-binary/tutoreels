@@ -50,6 +50,7 @@ export default function Home() {
   const [pendingAdds, setPendingAdds] = useState<SceneGraph["assets"]>([]);
   const [pendingDeletes, setPendingDeletes] = useState<Set<string>>(new Set());
   const editingRef = useRef(false); // prevents sceneGraph reset effect during edits
+  const editEntryStatesRef = useRef<Map<string, ComputedAssetState>>(new Map()); // snapshot of states when edit mode entered
 
   const { states, currentTime, duration, playing, speed, play, pause, reset, seek, setSpeed } =
     useAnimationEngine(sceneGraph);
@@ -159,12 +160,14 @@ export default function Home() {
   // --- Edit mode handlers ---
   const handleEnterEdit = useCallback(() => {
     pause();
+    // Snapshot the engine states at edit entry — used to compute deltas on save
+    editEntryStatesRef.current = new Map(states);
     setEditMode(true);
     setSelectedIds(new Set());
     setPendingAdds([]);
     setPendingDeletes(new Set());
     resetHistory();
-  }, [pause, resetHistory]);
+  }, [pause, resetHistory, states]);
 
   const handleExitEdit = useCallback(() => {
     setEditMode(false);
@@ -290,16 +293,33 @@ export default function Home() {
     editingRef.current = true;
     const sg = structuredClone(sceneGraph);
 
-    // 1. Apply ONLY the raw overrides to edited assets.
-    //    The overrides map contains exactly what the user changed — x, y, width,
-    //    height, rotation, text, fill, etc. No animation runtime state.
+    // 1. Apply overrides as DELTAS to existing assets.
+    //    The override stores absolute values from mergedStates context.
+    //    We compute the delta between override and the engine state at edit entry,
+    //    then apply that delta to initialState. This preserves animation offsets.
+    const entryStates = editEntryStatesRef.current;
     for (const [id, changes] of overrides) {
       if (pendingAdds.some((a) => a.id === id)) continue;
       const asset = sg.assets.find((a) => a.id === id);
       if (!asset) continue;
-      // Apply each override property directly to initialState
+      const entryState = entryStates.get(id);
+
       for (const [key, value] of Object.entries(changes)) {
-        if (value !== undefined && key !== "visible" && key !== "opacity" && key !== "scaleX" && key !== "scaleY") {
+        if (value === undefined || key === "visible" || key === "opacity" || key === "scaleX" || key === "scaleY") continue;
+
+        const initVal = (asset.initialState as unknown as Record<string, unknown>)[key];
+        const entryVal = entryState ? (entryState as unknown as Record<string, unknown>)[key] : undefined;
+
+        if (key === "x" || key === "y" || key === "rotation" || key === "fontSize" || key === "width" || key === "height" || key === "radius") {
+          // Numeric: compute delta from entry state and apply to initialState
+          if (typeof value === "number" && typeof entryVal === "number" && typeof initVal === "number") {
+            const delta = value - entryVal;
+            (asset.initialState as unknown as Record<string, unknown>)[key] = Math.round(initVal + delta);
+          } else {
+            (asset.initialState as unknown as Record<string, unknown>)[key] = value;
+          }
+        } else {
+          // Non-numeric (text, fill, stroke, points, etc): direct replacement
           (asset.initialState as unknown as Record<string, unknown>)[key] = value;
         }
       }

@@ -153,34 +153,8 @@ export function SceneRenderer({
                 const dx = newCx - cx, dy = newCy - cy;
                 onEditChange?.(asset.id, { points: state.points.map((v, i) => Math.round(v + (i % 2 === 0 ? dx : dy))) });
               } else {
-                // Single shape drag — also move text/labels inside this shape's bounds
-                const dx = newCx - cx, dy = newCy - cy;
-                const batch: Array<{ id: string; changes: Record<string, unknown> }> = [];
-                batch.push({ id: asset.id, changes: { x: Math.round(newCx), y: Math.round(newCy) } });
-
-                // Find text shapes that are "inside" this shape and move them too
-                const hw = (state.width ?? (state.radius ? state.radius * 2 : 0)) / 2;
-                const hh = (state.height ?? (state.radius ? state.radius * 2 : 0)) / 2;
-                if (hw > 0 && hh > 0) {
-                  for (const otherAsset of assets) {
-                    if (otherAsset.id === asset.id) continue;
-                    if (otherAsset.type !== "text" && otherAsset.type !== "textBox") continue;
-                    const otherState = states.get(otherAsset.id);
-                    if (!otherState || !otherState.visible) continue;
-                    const ox = otherState.x ?? 0;
-                    const oy = otherState.y ?? 0;
-                    // Check if the text center is inside this shape's bounding box (with padding)
-                    if (ox >= cx - hw - 10 && ox <= cx + hw + 10 && oy >= cy - hh - 10 && oy <= cy + hh + 10) {
-                      batch.push({ id: otherAsset.id, changes: { x: Math.round(ox + dx), y: Math.round(oy + dy) } });
-                    }
-                  }
-                }
-
-                if (batch.length > 1) {
-                  onBatchEditChange?.(batch);
-                } else {
-                  onEditChange?.(asset.id, { x: Math.round(newCx), y: Math.round(newCy) });
-                }
+                // Single shape drag — each shape is independent
+                onEditChange?.(asset.id, { x: Math.round(newCx), y: Math.round(newCy) });
               }
             }}
             onTransformEnd={() => {
@@ -299,43 +273,7 @@ export function SceneRenderer({
                 const newShapeY = Math.round(isScaled ? gy : cy);
                 changes.x = newShapeX;
                 changes.y = newShapeY;
-
-                // Also move text/labels inside this shape's bounds
-                const moveDx = newShapeX - cx;
-                const moveDy = newShapeY - cy;
-                const hw = (state.width ?? (state.radius ? state.radius * 2 : 0)) / 2;
-                const hh = (state.height ?? (state.radius ? state.radius * 2 : 0)) / 2;
-                const batch: Array<{ id: string; changes: Record<string, unknown> }> = [{ id: asset.id, changes }];
-
-                if (hw > 0 && hh > 0 && (Math.abs(moveDx) > 0.5 || Math.abs(moveDy) > 0.5 || isScaled || isRotated)) {
-                  for (const otherAsset of assets) {
-                    if (otherAsset.id === asset.id) continue;
-                    if (otherAsset.type !== "text" && otherAsset.type !== "textBox") continue;
-                    const otherState = states.get(otherAsset.id);
-                    if (!otherState || !otherState.visible) continue;
-                    const ox = otherState.x ?? 0;
-                    const oy = otherState.y ?? 0;
-                    if (ox >= cx - hw - 10 && ox <= cx + hw + 10 && oy >= cy - hh - 10 && oy <= cy + hh + 10) {
-                      const childChanges: Record<string, unknown> = {
-                        x: Math.round(ox + moveDx),
-                        y: Math.round(oy + moveDy),
-                      };
-                      if (isScaled && otherState.fontSize !== undefined) {
-                        childChanges.fontSize = Math.round(Math.abs(otherState.fontSize * Math.max(Math.abs(sx), Math.abs(sy))));
-                      }
-                      if (isRotated) {
-                        childChanges.rotation = Math.round(((otherState.rotation ?? 0) + rot) * 10) / 10;
-                      }
-                      batch.push({ id: otherAsset.id, changes: childChanges });
-                    }
-                  }
-                }
-
-                if (batch.length > 1) {
-                  onBatchEditChange?.(batch);
-                } else {
-                  onEditChange?.(asset.id, changes);
-                }
+                onEditChange?.(asset.id, changes);
               }
             }}
           >
