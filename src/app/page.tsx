@@ -19,7 +19,8 @@ import { demoTokenization } from "@/lib/demoTokenization";
 import { demoEmbedding } from "@/lib/demoEmbedding";
 import { demoPositionalEncoding } from "@/lib/demoPositionalEncoding";
 import { SavedAnimations } from "@/components/Input/SavedAnimations";
-import { saveToLocalStorage } from "@/lib/savedStorage";
+import { saveToLocalStorage, exportToFile, importFromFile } from "@/lib/savedStorage";
+import { LoginScreen, getStoredUser, clearStoredUser } from "@/components/Auth/LoginScreen";
 
 const CanvasWorkspace = dynamic(
   () => import("@/components/Canvas/CanvasWorkspace").then((m) => m.CanvasWorkspace),
@@ -38,6 +39,8 @@ const DEMOS: { label: string; sg: SceneGraph }[] = [
 ];
 
 export default function Home() {
+  const [user, setUser] = useState<string | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
   const [sceneGraph, setSceneGraph] = useState<SceneGraph | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,7 +50,21 @@ export default function Home() {
   const [sidebarTab, setSidebarTab] = useState<"create" | "saved">("create");
   const [savedVersion, setSavedVersion] = useState(0);
   const [showSaveConfirm, setShowSaveConfirm] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
   const autoPlayRef = useRef(false);
+
+  // Check for stored user on mount
+  useEffect(() => {
+    setUser(getStoredUser());
+    setAuthChecked(true);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    clearStoredUser();
+    setUser(null);
+    setShowUserMenu(false);
+    setSceneGraph(null);
+  }, []);
 
   // Edit mode
   const [editMode, setEditMode] = useState(false);
@@ -162,6 +179,24 @@ export default function Home() {
     setShowSaveConfirm(true);
     setTimeout(() => setShowSaveConfirm(false), 2000);
   }, [sceneGraph, lastPrompt]);
+
+  const handleExport = useCallback(() => {
+    if (!sceneGraph) return;
+    exportToFile(sceneGraph);
+  }, [sceneGraph]);
+
+  const handleImport = useCallback(async () => {
+    try {
+      const sg = await importFromFile();
+      setSceneGraph(sg);
+      setLastPrompt(null);
+      setError(null);
+      setActiveDemo(null);
+      autoPlayRef.current = true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to import animation");
+    }
+  }, []);
 
   // --- Edit mode handlers ---
   const handleEnterEdit = useCallback(() => {
@@ -431,10 +466,50 @@ export default function Home() {
   const selectedAsset = singleId ? sceneGraph?.assets.find((a) => a.id === singleId) : null;
   const selectedState = singleId ? mergedStates.get(singleId) : null;
 
+  // Auth guards — wait for mount check, then show login if no user
+  if (!authChecked) {
+    return <div className="min-h-screen bg-zinc-900" />;
+  }
+  if (!user) {
+    return <LoginScreen onLogin={setUser} />;
+  }
+
   return (
     <div className="flex h-screen overflow-hidden bg-zinc-900 text-white">
       {/* Left panel */}
       <div className="w-80 bg-zinc-800 border-r border-zinc-700 flex flex-col">
+        {/* User bar */}
+        <div className="relative px-3 py-2 border-b border-zinc-700 flex items-center justify-between">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-7 h-7 rounded-full bg-blue-600/20 border border-blue-500/40 flex items-center justify-center shrink-0">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" className="text-blue-400"><path d="M8 8a3 3 0 100-6 3 3 0 000 6zM2 14c0-2.761 2.686-5 6-5s6 2.239 6 5" /></svg>
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] text-zinc-500 leading-tight">Signed in</p>
+              <p className="text-xs text-white font-medium truncate">{user}</p>
+            </div>
+          </div>
+          <button onClick={() => setShowUserMenu((v) => !v)}
+            className="p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-700 rounded-md transition-colors shrink-0"
+            title="Account menu">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="1.25" /><circle cx="8" cy="8" r="1.25" /><circle cx="13" cy="8" r="1.25" /></svg>
+          </button>
+          {showUserMenu && (
+            <div className="absolute right-3 top-12 z-50 w-48 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl py-1">
+              <button onClick={() => { handleImport(); setShowUserMenu(false); }}
+                className="w-full text-left px-3 py-2 text-xs text-zinc-200 hover:bg-zinc-800 flex items-center gap-2">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 11V2" /><path d="M4.5 6.5L8 3l3.5 3.5" /><path d="M2.5 13.5h11" /></svg>
+                Import from file
+              </button>
+              <div className="h-px bg-zinc-700 my-1" />
+              <button onClick={handleLogout}
+                className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-zinc-800 flex items-center gap-2">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M6 2H3v12h3" /><path d="M10 5l3 3-3 3" /><path d="M7 8h6" /></svg>
+                Sign out
+              </button>
+            </div>
+          )}
+        </div>
         <div className="flex border-b border-zinc-700">
           <button onClick={() => setSidebarTab("create")} className={`flex-1 py-2.5 text-xs font-medium transition-colors ${sidebarTab === "create" ? "text-white border-b-2 border-blue-500" : "text-zinc-400 hover:text-zinc-200"}`}>Create</button>
           <button onClick={() => setSidebarTab("saved")} className={`flex-1 py-2.5 text-xs font-medium transition-colors ${sidebarTab === "saved" ? "text-white border-b-2 border-blue-500" : "text-zinc-400 hover:text-zinc-200"}`}>Saved</button>
@@ -492,6 +567,13 @@ export default function Home() {
                 {showSaveConfirm ? (<><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z" /></svg>Saved!</>)
                   : (<><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M2.5 2.5h8l3 3v8h-11z" /><path d="M5 2.5v4h5v-4" /><path d="M4.5 9.5h7" /><path d="M4.5 11.5h7" /></svg>Save</>)}
               </button>
+              {!editMode && (
+                <button onClick={handleExport} title="Download as JSON file"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-zinc-700 hover:bg-zinc-600 rounded-md text-zinc-300 border border-zinc-600 transition-colors shrink-0">
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M8 2v9" /><path d="M4.5 7.5L8 11l3.5-3.5" /><path d="M2.5 13.5h11" /></svg>
+                  Export
+                </button>
+              )}
               {lastPrompt && !editMode && (
                 <button onClick={handleRegenerate} disabled={loading}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 rounded-md text-zinc-300 transition-colors shrink-0">
