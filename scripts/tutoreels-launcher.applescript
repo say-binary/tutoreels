@@ -7,13 +7,16 @@
 --   4. Show a dialog with a clickable "Open in Browser" button.
 --      The dialog stays open until you click "Close".
 --
--- Build with:
+-- The dev server auto-shuts-down when the browser tab closes or the user
+-- is idle for 15 minutes (handled by instrumentation.ts + useHeartbeat).
+--
+-- Build: `npm run setup` does this automatically on macOS. Or manually:
 --   osacompile -o ~/Desktop/TutoReels.app scripts/tutoreels-launcher.applescript
 --
--- The dev server keeps running in the background after the dialog is closed.
--- To stop it: `lsof -ti tcp:3000 | xargs kill`  (or reboot).
+-- NOTE: `projectPath` below is rewritten by scripts/setup.mjs to the
+-- absolute path of the cloned repo on each machine before compiling.
 
-property projectPath : "/Users/ashishagnihotri/Documents/Claude_Code/tutoreels"
+property projectPath : "__TUTOREELS_PROJECT_PATH__"
 property serverUrl : "http://localhost:3000"
 property logFile : "/tmp/tutoreels-dev.log"
 property maxStartupSeconds : 60

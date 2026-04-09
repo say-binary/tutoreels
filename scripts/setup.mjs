@@ -6,11 +6,12 @@
 // - Installs npm dependencies.
 //
 // Run with: npm run setup
-import { readFile, writeFile, access } from "node:fs/promises";
+import { readFile, writeFile, access, unlink } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import * as readline from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
+import { stdin as input, stdout as output, platform, env } from "node:process";
 import path from "node:path";
+import os from "node:os";
 
 // ---------- helpers ----------
 const RESET = "\x1b[0m";
@@ -112,17 +113,65 @@ if (hasNodeModules) {
   }
 }
 
+// 4. Desktop launcher (macOS only)
+let launcherCreated = false;
+if (platform === "darwin") {
+  title("Desktop launcher (macOS)");
+  console.log(`${DIM}Create a clickable TutoReels.app on your Desktop that starts the server and opens the browser?${RESET}`);
+  const ans = await ask("Create Desktop launcher? [Y/n] ");
+  if (ans.toLowerCase() !== "n") {
+    try {
+      const sourceFile = path.resolve("scripts/tutoreels-launcher.applescript");
+      const source = await readFile(sourceFile, "utf8");
+      const projectPath = path.resolve(".");
+      const rendered = source.replace(/__TUTOREELS_PROJECT_PATH__/g, projectPath);
+
+      const tmpFile = path.join(os.tmpdir(), `tutoreels-launcher-${Date.now()}.applescript`);
+      await writeFile(tmpFile, rendered, "utf8");
+
+      const desktopDir = path.join(env.HOME || os.homedir(), "Desktop");
+      const appPath = path.join(desktopDir, "TutoReels.app");
+      await run("osacompile", ["-o", appPath, tmpFile]);
+      await unlink(tmpFile).catch(() => {});
+      ok(`Created ${appPath}`);
+      launcherCreated = true;
+    } catch (e) {
+      warn(`Couldn't create Desktop launcher: ${e.message}`);
+      console.log(`${DIM}You can still run \`npm run dev\` manually.${RESET}`);
+    }
+  } else {
+    info("Skipping Desktop launcher.");
+  }
+}
+
 rl.close();
 
-// 4. Done
+// 5. Done
 title("✅ All set!");
-console.log(`
+if (launcherCreated) {
+  console.log(`
+  ${BOLD}Next steps:${RESET}
+    Double-click ${CYAN}TutoReels${RESET} on your Desktop — it starts the server
+    and shows a clickable URL. The server auto-stops when you close the
+    browser or are idle for 15 minutes.
+
+  ${DIM}Or run it manually:${RESET}
+    ${CYAN}npm run dev${RESET}   →  ${CYAN}http://localhost:3000${RESET}
+
+  On first launch you'll be asked for a mobile number — stored locally
+  as an identifier only, no OTP or verification.
+
+  Enjoy building explainer animations!
+`);
+} else {
+  console.log(`
   ${BOLD}Next steps:${RESET}
     ${CYAN}npm run dev${RESET}
     Open ${CYAN}http://localhost:3000${RESET}
 
-  On first launch you'll be asked for a mobile number. This is stored
-  locally as an identifier only — no OTP or verification needed.
+  On first launch you'll be asked for a mobile number — stored locally
+  as an identifier only, no OTP or verification.
 
   Enjoy building explainer animations!
 `);
+}

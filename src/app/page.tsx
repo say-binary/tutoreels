@@ -8,6 +8,7 @@ import { EditToolbar } from "@/components/Editor/EditToolbar";
 import { PropertiesPanel } from "@/components/Editor/PropertiesPanel";
 import { useAnimationEngine } from "@/hooks/useAnimationEngine";
 import { useEditHistory } from "@/hooks/useEditHistory";
+import { useHeartbeat } from "@/hooks/useHeartbeat";
 import type { SceneGraph, AssetType, ShapeState } from "@/types/sceneGraph";
 import type { ComputedAssetState } from "@/engine/AnimationEngine";
 import { demoSceneGraph } from "@/lib/demoSceneGraph";
@@ -52,6 +53,9 @@ export default function Home() {
   const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const autoPlayRef = useRef(false);
+
+  // Dev-only: ping the idle watcher so the server shuts down when we leave.
+  useHeartbeat();
 
   // Check for stored user on mount
   useEffect(() => {

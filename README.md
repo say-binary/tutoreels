@@ -21,6 +21,7 @@ Under the hood it asks Claude to produce a structured **scene graph** (shapes + 
 - **Save & load** — save finalised animations to `localStorage`, or **export to a `.json` file** and re-import later. Your library survives browser wipes.
 - **Lightweight login** — mobile number is stored locally as an identifier. No passwords, no OTP, no server.
 - **Regenerate / iterate** — tweak your prompt and regenerate; leave review notes on demos.
+- **Desktop launcher (macOS)** — one-click `TutoReels.app` on your Desktop starts the server and opens the browser. **Auto-shuts-down** when the browser closes or you're idle for 15 minutes, so it never quietly chews your laptop battery.
 - **Runs entirely on your machine** — Next.js dev server, your own Anthropic API key, no telemetry.
 
 ---
@@ -71,24 +72,47 @@ Drag, resize, rotate, recolor, add, delete. Every edit is a delta so existing ke
 git clone https://github.com/say-binary/tutoreels.git
 cd tutoreels
 
-# 2. Interactive setup (asks for your API key, installs deps)
+# 2. Interactive setup (API key + deps + Desktop launcher)
 npm run setup
+```
 
-# 3. Start the dev server
+On macOS that's literally it: setup creates a **`TutoReels.app` on your Desktop**. Double-click it and a dialog pops up with the URL:
+
+<p align="center">
+  <em>Double-click → server starts → dialog shows → click "Open in Browser"</em>
+</p>
+
+On other operating systems, finish with:
+
+```bash
 npm run dev
 ```
 
-Then open **[http://localhost:3000](http://localhost:3000)** in your browser.
+…and open **[http://localhost:3000](http://localhost:3000)** in your browser.
 
-That's it. On first launch you'll be asked for a mobile number — it's stored **only in your browser** as an identifier (no OTP, no server).
+On first visit you'll be asked for a mobile number — it's stored **only in your browser** as an identifier (no OTP, no server).
 
 ### What `npm run setup` does
 
-- Verifies you're on Node 20+.
-- Prompts for your Anthropic API key (hidden input) and writes it to `.env.local`.
-- Runs `npm install`.
+1. Verifies you're on Node 20+.
+2. Prompts for your Anthropic API key and writes it to `.env.local`.
+3. Runs `npm install`.
+4. **On macOS**, offers to create a clickable `TutoReels.app` on your Desktop that:
+   - Starts `npm run dev` in the background if the server isn't already running.
+   - Waits for the server to come up.
+   - Shows a native dialog with an **"Open in Browser"** button.
+   - Keeps the dialog open until you click **"Close"**.
 
-You can re-run `npm run setup` any time to change the API key.
+You can re-run `npm run setup` any time to change the API key or rebuild the launcher.
+
+### Auto-shutdown
+
+The dev server shuts itself down automatically when:
+- **You close the browser tab** — within ~15 seconds (detected via heartbeat + `sendBeacon`).
+- **You're idle in the browser for 15 minutes** — no mouse / keyboard / scroll activity.
+- **Nobody ever opened the URL after launch** — 90-second grace period.
+
+This prevents the launcher from quietly leaving Node processes running forever. When you double-click the Desktop app again, a fresh server starts up.
 
 ### Manual setup (if you prefer)
 
@@ -122,8 +146,12 @@ npm run dev
 - **`src/engine/`** — deterministic animation engine. Given a scene graph and a time `t`, it returns the computed state of every shape (position, rotation, scale, opacity, etc.).
 - **`src/components/Canvas/`** — Konva-based renderer with drag / resize / rotate handles in edit mode.
 - **`src/hooks/useEditHistory.ts`** — an overrides map + undo/redo history. Edits are stored as deltas that are applied to `initialState` on save.
+- **`src/hooks/useHeartbeat.ts`** — dev-only client hook that pings `/api/heartbeat` every 30s while the tab is active.
 - **`src/lib/savedStorage.ts`** — `localStorage` persistence plus `exportToFile` / `importFromFile` for JSON round-trips.
 - **`src/app/api/generate/route.ts`** — Claude call with a retry loop that validates the JSON output against the schema and sends validation errors back to Claude for self-correction.
+- **`src/app/api/heartbeat/route.ts`** — dev-only endpoint the client pings to keep the server's idle watcher alive.
+- **`instrumentation.ts`** — runs once on dev server start; watches the last heartbeat and `process.exit(0)`s the server when idle or abandoned.
+- **`scripts/tutoreels-launcher.applescript`** — source for the macOS Desktop launcher `.app`.
 
 ---
 
