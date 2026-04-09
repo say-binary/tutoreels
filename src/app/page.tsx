@@ -21,12 +21,14 @@ import { demoEmbedding } from "@/lib/demoEmbedding";
 import { demoPositionalEncoding } from "@/lib/demoPositionalEncoding";
 import { SavedAnimations } from "@/components/Input/SavedAnimations";
 import { PlanReview } from "@/components/Input/PlanReview";
+import { RefineDialog } from "@/components/Input/RefineDialog";
 import { saveToLocalStorage, exportToFile, importFromFile } from "@/lib/savedStorage";
 import { LoginScreen, getStoredUser, clearStoredUser } from "@/components/Auth/LoginScreen";
 import {
   loadUserDemos,
   addUserDemo,
   removeUserDemo,
+  replaceUserDemo,
   loadHiddenDemos,
   hideDemoForUser,
   type UserDemo,
@@ -76,6 +78,17 @@ export default function Home() {
   const [planDraft, setPlanDraft] = useState<string | null>(null); // null = no modal
   const [planPrompt, setPlanPrompt] = useState<string>(""); // original prompt for the modal
   const [planLoading, setPlanLoading] = useState(false); // "Creating..." on Accept
+  // Tracks whether the active plan modal is for an incremental refine.
+  // If set, accepting the plan REPLACES this user demo instead of adding new.
+  const refineTargetIdRef = useRef<string | null>(null);
+
+  // Currently-loaded animation's plan (for user demos) — null when the
+  // active animation is a built-in or imported scene graph.
+  const currentPlanRef = useRef<string | null>(null);
+
+  // Refine dialog state (small "what would you like to change?" modal)
+  const [refineDialogOpen, setRefineDialogOpen] = useState(false);
+  const [refineLoading, setRefineLoading] = useState(false);
 
   // Track whether the current animation was edited in the session — used to
   // decide whether saving should hide the source demo from the user's list.
@@ -176,12 +189,26 @@ export default function Home() {
   // --- Non-edit handlers ---
   const handleLoadDemo = useCallback((demoId: string, sg: SceneGraph) => {
     setSceneGraph(sg);
-    setLastPrompt(null);
     setError(null);
     setActiveDemoId(demoId);
     hasEditedRef.current = false;
     autoPlayRef.current = true;
-  }, []);
+
+    // If this is a user-generated demo, restore its prompt and plan so
+    // Regenerate can refine it incrementally. For built-ins we use the
+    // metadata description as the prompt seed and have no prior plan.
+    if (demoId.startsWith("user_")) {
+      const ud = loadUserDemos(user).find((d) => d.id === demoId);
+      if (ud) {
+        setLastPrompt(ud.prompt);
+        currentPlanRef.current = ud.plan;
+        return;
+      }
+    }
+    // Built-in or unknown — seed prompt from description.
+    setLastPrompt(sg.metadata.description || sg.metadata.title || null);
+    currentPlanRef.current = null;
+  }, [user]);
 
   // New flow (Change 4): submitting a concept first asks /api/plan, shows
   // the plan in PlanReview modal, and only calls /api/generate after the
@@ -190,6 +217,7 @@ export default function Home() {
     setLoading(true);
     setError(null);
     setPlanPrompt(description);
+    refineTargetIdRef.current = null; // fresh creation, not refine
     setPlanDraft(""); // open modal in loading state
     try {
       const res = await fetch("/api/plan", {
@@ -214,10 +242,11 @@ export default function Home() {
   const handleCancelPlan = useCallback(() => {
     setPlanDraft(null);
     setPlanPrompt("");
+    refineTargetIdRef.current = null;
   }, []);
 
-  // User accepted the plan — send it to /api/generate. On success, save as
-  // a per-user demo and show it.
+  // User accepted the plan — send it to /api/generate. On success, save
+  // (or replace) as a user demo and show it.
   const handleAcceptPlan = useCallback(async (editedPlan: string) => {
     if (!planPrompt) return;
     setPlanLoading(true);
@@ -233,16 +262,36 @@ export default function Home() {
         throw new Error(data.error || "Generation failed");
       }
       const sg: SceneGraph = await res.json();
-      // Persist as a user demo (Change 3) and show it.
-      const demo = addUserDemo(user, planPrompt, editedPlan, sg);
-      setUserDemos((prev) => [demo, ...prev]);
+
+      // If this came from a Refine flow on an existing user demo, REPLACE
+      // it in-place so we don't accumulate duplicates. Otherwise add new.
+      const refineId = refineTargetIdRef.current;
+      let demo: UserDemo | null = null;
+      if (refineId && refineId.startsWith("user_")) {
+        demo = replaceUserDemo(user, refineId, planPrompt, editedPlan, sg);
+        if (demo) {
+          setUserDemos((prev) => prev.map((d) => (d.id === refineId ? demo! : d)));
+        }
+      }
+      if (!demo) {
+        demo = addUserDemo(user, planPrompt, editedPlan, sg);
+        setUserDemos((prev) => [demo!, ...prev]);
+        // If we were refining a built-in, hide the original from this user.
+        if (refineId && refineId.startsWith("builtin:")) {
+          hideDemoForUser(user, refineId);
+          setHiddenDemos((prev) => new Set([...prev, refineId]));
+        }
+      }
+
       setSceneGraph(sg);
       setLastPrompt(planPrompt);
       setActiveDemoId(demo.id);
+      currentPlanRef.current = editedPlan;
       hasEditedRef.current = false;
       autoPlayRef.current = true;
       setPlanDraft(null);
       setPlanPrompt("");
+      refineTargetIdRef.current = null;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
@@ -250,15 +299,56 @@ export default function Home() {
     }
   }, [planPrompt, user]);
 
+  // Regenerate now opens the RefineDialog so the user can describe the
+  // incremental changes they want, instead of throwing the previous plan
+  // away. The dialog feeds /api/refine-plan, which produces a revised
+  // plan, which then opens in the existing PlanReview modal.
   const handleRegenerate = useCallback(() => {
-    if (lastPrompt) handleSubmitConcept(lastPrompt);
-  }, [lastPrompt, handleSubmitConcept]);
+    if (!lastPrompt && !activeDemoId) return;
+    setRefineDialogOpen(true);
+  }, [lastPrompt, activeDemoId]);
+
+  const handleCancelRefine = useCallback(() => {
+    setRefineDialogOpen(false);
+  }, []);
+
+  const handleRefineSubmit = useCallback(async (comments: string) => {
+    if (!lastPrompt) return;
+    setRefineLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/refine-plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          originalPrompt: lastPrompt,
+          previousPlan: currentPlanRef.current || undefined,
+          comments,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Refine failed");
+      }
+      const data = await res.json();
+      // Hand off to the PlanReview modal in refine mode (replace, not add).
+      refineTargetIdRef.current = activeDemoId;
+      setPlanPrompt(lastPrompt);
+      setPlanDraft(data.plan || "");
+      setRefineDialogOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+    } finally {
+      setRefineLoading(false);
+    }
+  }, [lastPrompt, activeDemoId]);
 
   const handleLoadSaved = useCallback((sg: SceneGraph) => {
     setSceneGraph(sg);
     setLastPrompt(null);
     setError(null);
     setActiveDemoId(null);
+    currentPlanRef.current = null;
     hasEditedRef.current = false;
     autoPlayRef.current = true;
   }, []);
@@ -291,6 +381,7 @@ export default function Home() {
       setLastPrompt(null);
       setError(null);
       setActiveDemoId(null);
+      currentPlanRef.current = null;
       hasEditedRef.current = false;
       autoPlayRef.current = true;
     } catch (err) {
@@ -592,6 +683,15 @@ export default function Home() {
 
   return (
     <>
+    {refineDialogOpen && (
+      <RefineDialog
+        originalPrompt={lastPrompt || ""}
+        hasPreviousPlan={!!currentPlanRef.current}
+        loading={refineLoading}
+        onCancel={handleCancelRefine}
+        onSubmit={handleRefineSubmit}
+      />
+    )}
     {planDraft !== null && (
       <PlanReview
         description={planPrompt}
@@ -732,11 +832,12 @@ export default function Home() {
                   Export
                 </button>
               )}
-              {lastPrompt && !editMode && (
-                <button onClick={handleRegenerate} disabled={loading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 rounded-md text-zinc-300 transition-colors shrink-0">
+              {(lastPrompt || activeDemoId) && !editMode && (
+                <button onClick={handleRegenerate} disabled={loading || refineLoading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-zinc-700 hover:bg-amber-600/80 disabled:opacity-50 rounded-md text-zinc-300 hover:text-white border border-zinc-600 hover:border-amber-500/50 transition-colors shrink-0"
+                  title="Refine this animation with comments">
                   <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2v5h5L5.05 5.05A5.5 5.5 0 0 1 13.5 8 5.5 5.5 0 1 1 2.05 6.23L.93 5.36A7 7 0 1 0 15 8a7 7 0 0 0-12.55-4.2L2 2z" /></svg>
-                  Regenerate
+                  Refine
                 </button>
               )}
             </div>

@@ -71,6 +71,36 @@ export function removeUserDemo(user: string | null, id: string) {
   localStorage.setItem(userDemosKey(user), JSON.stringify(next));
 }
 
+/**
+ * Replace an existing user demo's plan, scene graph, and updated timestamp
+ * — used by the "Refine" flow so a regenerated demo updates in-place
+ * instead of creating a duplicate. Position in the list is preserved.
+ * Returns the updated demo, or null if no demo with that id was found.
+ */
+export function replaceUserDemo(
+  user: string | null,
+  id: string,
+  prompt: string,
+  plan: string,
+  sceneGraph: SceneGraph
+): UserDemo | null {
+  const existing = loadUserDemos(user);
+  const idx = existing.findIndex((d) => d.id === id);
+  if (idx === -1) return null;
+  const updated: UserDemo = {
+    ...existing[idx],
+    prompt,
+    plan,
+    sceneGraph,
+    label: makeLabel(prompt, sceneGraph.metadata.title),
+    createdAt: new Date().toISOString(),
+  };
+  const next = [...existing];
+  next[idx] = updated;
+  localStorage.setItem(userDemosKey(user), JSON.stringify(next));
+  return updated;
+}
+
 /** Build a short, pill-friendly label from the prompt or scene graph title. */
 function makeLabel(prompt: string, title?: string): string {
   const src = (title && title.trim()) || prompt;
