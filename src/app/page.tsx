@@ -20,23 +20,38 @@ import { demoTokenization } from "@/lib/demoTokenization";
 import { demoEmbedding } from "@/lib/demoEmbedding";
 import { demoPositionalEncoding } from "@/lib/demoPositionalEncoding";
 import { SavedAnimations } from "@/components/Input/SavedAnimations";
+import { PlanReview } from "@/components/Input/PlanReview";
 import { saveToLocalStorage, exportToFile, importFromFile } from "@/lib/savedStorage";
 import { LoginScreen, getStoredUser, clearStoredUser } from "@/components/Auth/LoginScreen";
+import {
+  loadUserDemos,
+  addUserDemo,
+  removeUserDemo,
+  loadHiddenDemos,
+  hideDemoForUser,
+  type UserDemo,
+} from "@/lib/userDemos";
 
 const CanvasWorkspace = dynamic(
   () => import("@/components/Canvas/CanvasWorkspace").then((m) => m.CanvasWorkspace),
   { ssr: false }
 );
 
-const DEMOS: { label: string; sg: SceneGraph }[] = [
-  { label: "Neuron", sg: demoSceneGraph },
-  { label: "Binary Search", sg: demoBinarySearch },
-  { label: "Hash Map", sg: demoHashMap },
-  { label: "TCP Handshake", sg: demoTCPHandshake },
-  { label: "Multi-Agent", sg: demoMultiAgent },
-  { label: "Tokenization", sg: demoTokenization },
-  { label: "Embedding", sg: demoEmbedding },
-  { label: "Pos. Encoding", sg: demoPositionalEncoding },
+// Built-in demos. Each has a stable `id` used for per-user hiding.
+interface BuiltInDemo {
+  id: string;
+  label: string;
+  sg: SceneGraph;
+}
+const DEMOS: BuiltInDemo[] = [
+  { id: "builtin:neuron", label: "Neuron", sg: demoSceneGraph },
+  { id: "builtin:binary-search", label: "Binary Search", sg: demoBinarySearch },
+  { id: "builtin:hash-map", label: "Hash Map", sg: demoHashMap },
+  { id: "builtin:tcp-handshake", label: "TCP Handshake", sg: demoTCPHandshake },
+  { id: "builtin:multi-agent", label: "Multi-Agent", sg: demoMultiAgent },
+  { id: "builtin:tokenization", label: "Tokenization", sg: demoTokenization },
+  { id: "builtin:embedding", label: "Embedding", sg: demoEmbedding },
+  { id: "builtin:pos-encoding", label: "Pos. Encoding", sg: demoPositionalEncoding },
 ];
 
 export default function Home() {
@@ -46,28 +61,57 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastPrompt, setLastPrompt] = useState<string | null>(null);
-  const [activeDemo, setActiveDemo] = useState<string | null>(null);
-  const [reviewNote, setReviewNote] = useState("");
+  const [activeDemoId, setActiveDemoId] = useState<string | null>(null);
   const [sidebarTab, setSidebarTab] = useState<"create" | "saved">("create");
   const [savedVersion, setSavedVersion] = useState(0);
   const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const autoPlayRef = useRef(false);
 
+  // Per-user demo state
+  const [userDemos, setUserDemos] = useState<UserDemo[]>([]);
+  const [hiddenDemos, setHiddenDemos] = useState<Set<string>>(new Set());
+
+  // Plan-review flow state
+  const [planDraft, setPlanDraft] = useState<string | null>(null); // null = no modal
+  const [planPrompt, setPlanPrompt] = useState<string>(""); // original prompt for the modal
+  const [planLoading, setPlanLoading] = useState(false); // "Creating..." on Accept
+
+  // Track whether the current animation was edited in the session — used to
+  // decide whether saving should hide the source demo from the user's list.
+  const hasEditedRef = useRef(false);
+
   // Dev-only: ping the idle watcher so the server shuts down when we leave.
   useHeartbeat();
 
   // Check for stored user on mount
   useEffect(() => {
-    setUser(getStoredUser());
+    const u = getStoredUser();
+    setUser(u);
     setAuthChecked(true);
+    if (u) {
+      setUserDemos(loadUserDemos(u));
+      setHiddenDemos(loadHiddenDemos(u));
+    }
   }, []);
+
+  // When user changes (login / logout), reload per-user demo state.
+  useEffect(() => {
+    if (user) {
+      setUserDemos(loadUserDemos(user));
+      setHiddenDemos(loadHiddenDemos(user));
+    } else {
+      setUserDemos([]);
+      setHiddenDemos(new Set());
+    }
+  }, [user]);
 
   const handleLogout = useCallback(() => {
     clearStoredUser();
     setUser(null);
     setShowUserMenu(false);
     setSceneGraph(null);
+    setActiveDemoId(null);
   }, []);
 
   // Edit mode
@@ -130,49 +174,92 @@ export default function Home() {
   }, [sceneGraph]);
 
   // --- Non-edit handlers ---
-  const handleLoadDemo = useCallback((label: string, sg: SceneGraph) => {
+  const handleLoadDemo = useCallback((demoId: string, sg: SceneGraph) => {
     setSceneGraph(sg);
     setLastPrompt(null);
     setError(null);
-    setActiveDemo(label);
-    setReviewNote("");
+    setActiveDemoId(demoId);
+    hasEditedRef.current = false;
     autoPlayRef.current = true;
   }, []);
 
-  const handleGenerate = useCallback(async (description: string) => {
+  // New flow (Change 4): submitting a concept first asks /api/plan, shows
+  // the plan in PlanReview modal, and only calls /api/generate after the
+  // user accepts. The generated animation is added to the user's demo list.
+  const handleSubmitConcept = useCallback(async (description: string) => {
     setLoading(true);
     setError(null);
-    setLastPrompt(description);
-    setActiveDemo(null);
+    setPlanPrompt(description);
+    setPlanDraft(""); // open modal in loading state
     try {
-      const res = await fetch("/api/generate", {
+      const res = await fetch("/api/plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ description }),
       });
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || "Generation failed");
+        throw new Error(data.error || "Plan generation failed");
       }
-      const sg: SceneGraph = await res.json();
-      setSceneGraph(sg);
-      autoPlayRef.current = true;
+      const data = await res.json();
+      setPlanDraft(data.plan || "");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
+      setPlanDraft(null); // close modal
     } finally {
       setLoading(false);
     }
   }, []);
 
+  const handleCancelPlan = useCallback(() => {
+    setPlanDraft(null);
+    setPlanPrompt("");
+  }, []);
+
+  // User accepted the plan — send it to /api/generate. On success, save as
+  // a per-user demo and show it.
+  const handleAcceptPlan = useCallback(async (editedPlan: string) => {
+    if (!planPrompt) return;
+    setPlanLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: planPrompt, plan: editedPlan }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Generation failed");
+      }
+      const sg: SceneGraph = await res.json();
+      // Persist as a user demo (Change 3) and show it.
+      const demo = addUserDemo(user, planPrompt, editedPlan, sg);
+      setUserDemos((prev) => [demo, ...prev]);
+      setSceneGraph(sg);
+      setLastPrompt(planPrompt);
+      setActiveDemoId(demo.id);
+      hasEditedRef.current = false;
+      autoPlayRef.current = true;
+      setPlanDraft(null);
+      setPlanPrompt("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+    } finally {
+      setPlanLoading(false);
+    }
+  }, [planPrompt, user]);
+
   const handleRegenerate = useCallback(() => {
-    if (lastPrompt) handleGenerate(lastPrompt);
-  }, [lastPrompt, handleGenerate]);
+    if (lastPrompt) handleSubmitConcept(lastPrompt);
+  }, [lastPrompt, handleSubmitConcept]);
 
   const handleLoadSaved = useCallback((sg: SceneGraph) => {
     setSceneGraph(sg);
     setLastPrompt(null);
     setError(null);
-    setActiveDemo(null);
+    setActiveDemoId(null);
+    hasEditedRef.current = false;
     autoPlayRef.current = true;
   }, []);
 
@@ -182,7 +269,15 @@ export default function Home() {
     setSavedVersion((v) => v + 1);
     setShowSaveConfirm(true);
     setTimeout(() => setShowSaveConfirm(false), 2000);
-  }, [sceneGraph, lastPrompt]);
+    // Change 5: if the user edited a demo and hit save, hide that demo
+    // from their personal list. The saved version now lives in the Saved
+    // tab, so the original pill would just be a duplicate.
+    if (activeDemoId && hasEditedRef.current) {
+      hideDemoForUser(user, activeDemoId);
+      setHiddenDemos((prev) => new Set([...prev, activeDemoId]));
+      hasEditedRef.current = false;
+    }
+  }, [sceneGraph, lastPrompt, activeDemoId, user]);
 
   const handleExport = useCallback(() => {
     if (!sceneGraph) return;
@@ -195,7 +290,8 @@ export default function Home() {
       setSceneGraph(sg);
       setLastPrompt(null);
       setError(null);
-      setActiveDemo(null);
+      setActiveDemoId(null);
+      hasEditedRef.current = false;
       autoPlayRef.current = true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to import animation");
@@ -241,6 +337,7 @@ export default function Home() {
 
   // Single shape edit (drag end, transform end, property change)
   const handleEditChange = useCallback((id: string, changes: Record<string, unknown>) => {
+    hasEditedRef.current = true;
     applyEdit((prev) => {
       const next = new Map(prev);
       const existing = next.get(id) || {};
@@ -251,6 +348,7 @@ export default function Home() {
 
   // Batch edit (multi-drag)
   const handleBatchEditChange = useCallback((batch: Array<{ id: string; changes: Record<string, unknown> }>) => {
+    hasEditedRef.current = true;
     applyEdit((prev) => {
       const next = new Map(prev);
       for (const { id, changes } of batch) {
@@ -312,6 +410,7 @@ export default function Home() {
       container: { x: 640, y: 360, width: 200, height: 120, fill: "#0d1220", stroke: "#95A5A6", text: "Group" },
     };
     const newAsset = { id, type: type as SceneGraph["assets"][0]["type"], initialState: defaults[type] || defaults.rect, visible: true };
+    hasEditedRef.current = true;
     setPendingAdds((prev) => [...prev, newAsset]);
     setSelectedIds(new Set([id]));
   }, [sceneGraph]);
@@ -319,6 +418,7 @@ export default function Home() {
   // Delete selected — deferred to save checkpoint
   const handleDeleteSelected = useCallback(() => {
     if (selectedIds.size === 0) return;
+    hasEditedRef.current = true;
     setPendingDeletes((prev) => {
       const next = new Set(prev);
       for (const id of selectedIds) next.add(id);
@@ -402,9 +502,21 @@ export default function Home() {
 
     sg.timeline.sort((a, b) => a.startTime - b.startTime);
     setSceneGraph(sg);
+
+    // Change 5: Save checkpoint after editing counts as "edited and saved".
+    // Also persist the edited scene graph to the Saved tab, and hide the
+    // source demo from the user's list.
+    saveToLocalStorage(sg, lastPrompt);
+    setSavedVersion((v) => v + 1);
+    if (activeDemoId) {
+      hideDemoForUser(user, activeDemoId);
+      setHiddenDemos((prev) => new Set([...prev, activeDemoId]));
+    }
+    hasEditedRef.current = false;
+
     handleExitEdit();
     setTimeout(() => seek(currentTime), 50);
-  }, [sceneGraph, overrides, pendingAdds, pendingDeletes, currentTime, handleExitEdit, seek]);
+  }, [sceneGraph, overrides, pendingAdds, pendingDeletes, currentTime, handleExitEdit, seek, lastPrompt, activeDemoId, user]);
 
   // Arrow key nudge
   const handleArrowMove = useCallback((dx: number, dy: number) => {
@@ -479,6 +591,16 @@ export default function Home() {
   }
 
   return (
+    <>
+    {planDraft !== null && (
+      <PlanReview
+        description={planPrompt}
+        plan={planDraft}
+        loading={planLoading || loading}
+        onCancel={handleCancelPlan}
+        onAccept={handleAcceptPlan}
+      />
+    )}
     <div className="flex h-screen overflow-hidden bg-zinc-900 text-white">
       {/* Left panel */}
       <div className="w-80 bg-zinc-800 border-r border-zinc-700 flex flex-col">
@@ -521,26 +643,58 @@ export default function Home() {
 
         {sidebarTab === "create" ? (
           <>
-            <TextInputPanel onSubmit={handleGenerate} onDemo={() => handleLoadDemo("Neuron", demoSceneGraph)} loading={loading} />
+            <TextInputPanel onSubmit={handleSubmitConcept} loading={loading} />
             <div className="border-t border-zinc-700 p-3">
-              <p className="text-xs text-zinc-500 mb-2 font-medium">Review Demos:</p>
+              <p className="text-xs text-zinc-500 mb-2 font-medium">Demos:</p>
               <div className="flex flex-wrap gap-1.5">
-                {DEMOS.map((d) => (
-                  <button key={d.label} onClick={() => handleLoadDemo(d.label, d.sg)} disabled={loading}
-                    className={`px-2.5 py-1 text-xs rounded-md transition-colors ${activeDemo === d.label ? "bg-blue-600 text-white" : "bg-zinc-700 text-zinc-300 hover:bg-zinc-600"} disabled:opacity-50`}>
+                {/* Built-in demos, filtered by the user's hidden set */}
+                {DEMOS.filter((d) => !hiddenDemos.has(d.id)).map((d) => (
+                  <button
+                    key={d.id}
+                    onClick={() => handleLoadDemo(d.id, d.sg)}
+                    disabled={loading}
+                    className={`px-2.5 py-1 text-xs rounded-md transition-colors ${activeDemoId === d.id ? "bg-blue-600 text-white" : "bg-zinc-700 text-zinc-300 hover:bg-zinc-600"} disabled:opacity-50`}
+                  >
                     {d.label}
                   </button>
                 ))}
+                {/* User-generated demos, same filter */}
+                {userDemos.filter((d) => !hiddenDemos.has(d.id)).map((d) => (
+                  <div key={d.id} className="relative group">
+                    <button
+                      onClick={() => handleLoadDemo(d.id, d.sceneGraph)}
+                      disabled={loading}
+                      title={d.prompt}
+                      className={`pl-2.5 pr-6 py-1 text-xs rounded-md transition-colors ${activeDemoId === d.id ? "bg-purple-600 text-white" : "bg-purple-900/40 text-purple-200 hover:bg-purple-800/60 border border-purple-700/40"} disabled:opacity-50`}
+                    >
+                      {d.label}
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!confirm(`Remove "${d.label}" from your demos?`)) return;
+                        removeUserDemo(user, d.id);
+                        setUserDemos((prev) => prev.filter((x) => x.id !== d.id));
+                        if (activeDemoId === d.id) {
+                          setActiveDemoId(null);
+                          setSceneGraph(null);
+                        }
+                      }}
+                      className="absolute right-1 top-1/2 -translate-y-1/2 w-3.5 h-3.5 flex items-center justify-center text-[10px] text-purple-300 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                      title="Remove from demos"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
               </div>
+              {DEMOS.filter((d) => !hiddenDemos.has(d.id)).length === 0 &&
+                userDemos.filter((d) => !hiddenDemos.has(d.id)).length === 0 && (
+                  <p className="text-[10px] text-zinc-600 italic">
+                    No demos available — submit a concept above to create one.
+                  </p>
+                )}
             </div>
-            {activeDemo && (
-              <div className="border-t border-zinc-700 p-3">
-                <label className="text-xs text-zinc-400 block mb-1">Review notes for &quot;{activeDemo}&quot;:</label>
-                <textarea value={reviewNote} onChange={(e) => setReviewNote(e.target.value)}
-                  placeholder="What's wrong?..." rows={3}
-                  className="w-full bg-zinc-900 border border-zinc-600 rounded-lg p-2 text-xs text-white placeholder-zinc-500 resize-none focus:outline-none focus:border-yellow-500" />
-              </div>
-            )}
           </>
         ) : (
           <div className="flex-1 p-3 overflow-y-auto">
@@ -674,5 +828,6 @@ export default function Home() {
         )}
       </div>
     </div>
+    </>
   );
 }

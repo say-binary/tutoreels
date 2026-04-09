@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { description } = await req.json();
+    const { description, plan } = await req.json();
 
     if (!description || typeof description !== "string") {
       return NextResponse.json({ error: "Description is required" }, { status: 400 });
@@ -32,16 +32,27 @@ export async function POST(req: NextRequest) {
     const client = new Anthropic();
     const systemPrompt = buildSystemPrompt();
 
-    // Step 1: Enrich the concept into a complete system breakdown
-    console.log(`[generate] Enriching concept: "${description.slice(0, 60)}..."`);
-    const enrichedConcept = await enrichConcept(client, description);
-    console.log(`[generate] Enrichment done (${enrichedConcept.length} chars)`);
+    // If the caller supplied an already-reviewed plan (via the Plan Review
+    // modal), use it directly. Otherwise fall back to the legacy auto-enrich
+    // path so anything still calling generate without a plan keeps working.
+    let enrichedConcept: string;
+    if (typeof plan === "string" && plan.trim().length > 0) {
+      if (plan.length > 8000) {
+        return NextResponse.json({ error: "Plan too long (max 8000 characters)" }, { status: 400 });
+      }
+      console.log(`[generate] Using user-edited plan (${plan.length} chars)`);
+      enrichedConcept = plan;
+    } else {
+      console.log(`[generate] No plan provided — auto-enriching: "${description.slice(0, 60)}..."`);
+      enrichedConcept = await enrichConcept(client, description);
+      console.log(`[generate] Enrichment done (${enrichedConcept.length} chars)`);
+    }
 
     // Build initial messages with enriched concept
     const messages: Anthropic.MessageParam[] = [
       {
         role: "user",
-        content: `Create an explainer animation for this concept. Here is a detailed breakdown of ALL components and data flow that MUST be included:\n\n${enrichedConcept}\n\nOriginal request: "${description}"\n\nInclude ALL components listed above. Include persistent step annotation notes (note_1, note_2, etc.) on the left side. Output ONLY the JSON scene graph. No explanation, no markdown.`,
+        content: `Create an explainer animation for this concept. Here is the FINAL plan the user approved — follow it EXACTLY, including every component, step, and timing:\n\n${enrichedConcept}\n\nOriginal request: "${description}"\n\nInclude ALL components and steps from the plan above. Include persistent step annotation notes (note_1, note_2, etc.) on the left side. Output ONLY the JSON scene graph. No explanation, no markdown.`,
       },
     ];
 

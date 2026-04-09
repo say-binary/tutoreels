@@ -73,8 +73,13 @@ on isServerUp()
 end isServerUp
 
 -- Start `npm run dev` in the background, fully detached from this process.
+-- Before starting, kill any stale process that may be holding port 3000 —
+-- for example, a Turbopack worker orphaned by an unclean previous shutdown.
 on startServer()
-	set shellCmd to "cd " & quoted form of projectPath & " && " & ¬
+	set killStale to "lsof -ti tcp:3000 2>/dev/null | xargs kill -9 2>/dev/null; " & ¬
+		"pkill -f 'next-server' 2>/dev/null; true"
+	set shellCmd to killStale & "; " & ¬
+		"cd " & quoted form of projectPath & " && " & ¬
 		"export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH && " & ¬
 		"( nohup npm run dev > " & quoted form of logFile & " 2>&1 < /dev/null & )"
 	do shell script shellCmd

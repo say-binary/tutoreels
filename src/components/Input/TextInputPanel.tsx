@@ -4,7 +4,6 @@ import { useState, useEffect, useRef } from "react";
 
 interface TextInputPanelProps {
   onSubmit: (description: string) => void;
-  onDemo: () => void;
   loading: boolean;
 }
 
@@ -18,7 +17,7 @@ const SUGGESTIONS = [
   "Explain how public key encryption works",
 ];
 
-export function TextInputPanel({ onSubmit, onDemo, loading }: TextInputPanelProps) {
+export function TextInputPanel({ onSubmit, loading }: TextInputPanelProps) {
   const [text, setText] = useState("");
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -122,14 +121,6 @@ export function TextInputPanel({ onSubmit, onDemo, loading }: TextInputPanelProp
             Usually takes 10-20 seconds
           </p>
         )}
-
-        <button
-          onClick={onDemo}
-          disabled={loading}
-          className="w-full py-2 bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 rounded-lg text-sm text-zinc-300 transition-colors"
-        >
-          Try Demo (no API key needed)
-        </button>
 
         <div>
           <p className="text-xs text-zinc-500 mb-2">Try an example:</p>
